@@ -74,6 +74,4 @@ def world_loss(world, obs, act, t1, t2, d1r, d2r, scale):
     diff = pred.squeeze(0) - actual
     w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2      # 小动作权重大
     loss = (diff[:2] ** 2 * w_pos).mean() + (diff[2:] ** 2).mean()
-    pp = torch.exp(torch.clamp(pred[0, 3] * scale[3], -30.0, 60.0) / 10.0)
-    pa = torch.exp(torch.clamp(actual[3] * scale[3], -30.0, 60.0) / 10.0)
-    return loss + 0.5 * (pp - pa) ** 2
+    return loss + env.pain_loss_t(pred[0, 3] * scale[3], actual[3] * scale[3])

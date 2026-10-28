@@ -150,6 +150,21 @@ def pain_t(theta2):
     return torch.clamp(p, max=PAIN_CAP)
 
 
+def pain_loss_t(pred_pain, true_pain):
+    """痛项损失：价值空间**相对**加权（和位置项的 1/(|Δ|+0.05)² 同构）。
+
+    为什么不能用 0.5·(e^p − e^a)²：那个按痛的**大小**加权，于是
+      "该是 0 却报 0.7" 的损失只有 0.0026（价值上却错了 0.36），
+      "该是 8 却报 7" 的损失有 0.022（价值上错 5）——模型被允许在无痛区乱报，
+    而那正是"折了一下到底痛不痛"的判定边界。
+    相对加权后：前者 0.131（×50），后者 0.022（×1）——无痛区终于开始算数。
+    """
+    import torch
+    pen_p = 5.0 * (torch.exp(torch.clamp(pred_pain, -30.0, 60.0) / 10.0) - 1.0)
+    pen_a = 5.0 * (torch.exp(torch.clamp(true_pain, -30.0, 60.0) / 10.0) - 1.0)
+    return (pen_p - pen_a) ** 2 / (pen_a.abs() + 1.0) ** 2
+
+
 def feeling_text(theta1, theta2, vel, ball, target):
     """感觉文本化（Jev 式输入）。"""
     t = max(touch(theta1, theta2, ball), self_touch(theta1, theta2))
@@ -263,18 +278,20 @@ def grid_sensation(theta1, theta2, ball=None):
 # ===== 数值观测向量（纯数值，归一化去量纲）=====
 def obs_vector(t1, t2, target):
     """数值观测（61 维）：
-       sin/cos(θ1), θ1/180, sin/cos(θ2), θ2/180,
+       sin/cos(θ1), θ1/180（先环绕到 [-180,180)）, sin/cos(θ2), θ2/180,
        手位置/2, 目标/2, 距离/4, 方向 sin/cos, 感觉网格 48
 
     角度给两套编码：sin/cos 让位置这类三角量好算且无 ±180 跳变；
     线性值让"阈值/阻力"这类规则（θ2>160 才痛）在网络里是一个平面，不用反解三角函数。
+    肩可无限旋转，所以线性项必须先环绕——否则 θ1=229° 会喂出 1.27（训练分布之外）。
     """
     hx, hy = forward_kinematics(t1, t2)
     dist = math.hypot(hx - target[0], hy - target[1])
     ang = math.degrees(math.atan2(target[1] - hy, target[0] - hx))
     a1 = math.radians(t1)
     a2 = math.radians(t2)
-    return ([math.sin(a1), math.cos(a1), t1 / 180.0,
+    t1w = (t1 + 180.0) % 360.0 - 180.0    # 肩可无限旋转 → 先环绕到 [-180,180)
+    return ([math.sin(a1), math.cos(a1), t1w / 180.0,
              math.sin(a2), math.cos(a2), t2 / 180.0,
              hx / 2.0, hy / 2.0,
              target[0] / 2.0, target[1] / 2.0,

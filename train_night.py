@@ -140,9 +140,7 @@ def main():
             diff = pred.squeeze(0) - actual
             w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2
             loss_w = (diff[:2] ** 2 * w_pos).mean() + (diff[2:] ** 2).mean()
-            pp = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
-            pa = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
-            loss_w = loss_w + 0.5 * (pp - pa) ** 2
+            loss_w = loss_w + env.pain_loss_t(pred[0, 3] * 30.0, actual[3] * 30.0)
             opt_w2.zero_grad()
             loss_w.backward()
             opt_w2.step()

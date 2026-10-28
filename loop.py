@@ -86,10 +86,8 @@ def _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, pain_a, load_a, 
         return False
     pred2 = world(obs, act.detach())
     loss = ((pred2.squeeze(0) - actual) ** 2).mean()
-    # 痛项用指数差（与价值一致——不是线性 MSE）
-    pp = torch.exp(torch.clamp(pred2[0, 3] * scale[3], -30.0, 60.0) / 10.0)
-    pa = torch.exp(torch.clamp(actual[3] * scale[3], -30.0, 60.0) / 10.0)
-    loss = loss + 0.5 * (pp - pa) ** 2
+    # 痛项：价值空间相对加权（与预训练/夜间共用 env.pain_loss_t）
+    loss = loss + env.pain_loss_t(pred2[0, 3] * scale[3], actual[3] * scale[3])
     opt_w.zero_grad()
     loss.backward()
     opt_w.step()
