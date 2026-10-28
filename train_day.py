@@ -39,6 +39,8 @@ def main():
     p.add_argument("--t2", type=float, default=90.0, help="初始 θ2")
     p.add_argument("--max-steps", type=int, default=100, help="最多接受多少次移动")
     p.add_argument("--max-retries", type=int, default=50, help="同一个状态最多试几次")
+    p.add_argument("--per-task-reset", action="store_true",
+                   help="每个任务开始前把 LoRA 清零（每个任务都从 base 重新适应）")
     p.add_argument("--stall-limit", type=int, default=15,
                    help="连续多少步没刷新最近距离就停（100=不让它停）")
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
@@ -59,9 +61,11 @@ def main():
         print(f"[warn] 无 {args.base}——base 随机！先跑 pretrain_lora.py", flush=True)
 
     # 2. 白天：任务循环（只训练 LoRA）
-    opt_d = torch.optim.Adam(list(dec.loras()["shoulder"].parameters())
-                             + list(dec.loras()["elbow"].parameters()), lr=args.lr)
-    opt_w = torch.optim.Adam(world.loras_dict().parameters(), lr=args.lr)
+    dec_lora_params = (list(dec.loras()["shoulder"].parameters())
+                       + list(dec.loras()["elbow"].parameters()))
+    world_lora_params = list(world.loras_dict().parameters())
+    opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
+    opt_w = torch.optim.Adam(world_lora_params, lr=args.lr)
 
     # 任务列表（--target 单任务 / --tasks 随机多任务）
     tasks = []
@@ -81,6 +85,11 @@ def main():
     for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
             continue
+        if args.per_task_reset:      # 每个任务都从同一份 base 重新适应
+            for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
+                lora.reset()
+            opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
+            opt_w = torch.optim.Adam(world_lora_params, lr=args.lr)
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
                        max_steps=args.max_steps, max_retries=args.max_retries,
                        stall_limit=args.stall_limit,
@@ -112,7 +121,8 @@ def main():
                 "world_base": world.base.state_dict(),
                 "world_heads": world.heads.state_dict(),
                 "world_lora": {k: v.state_dict()
-                               for k, v in world.loras_dict().items()}}, "lora_day.pt")
+                               for k, v in world.loras_dict().items()}},
+               "lora_adapt.pt" if args.per_task_reset else "lora_day.pt")
     reach = [r for r in results if r["reachable"]]
     reach_hit = sum(1 for r in reach if r["hit"])
     print(f"[completion] 可达样本 {len(reach)}/{len(results)} | 成功 {reach_hit}/{len(reach)} = "
