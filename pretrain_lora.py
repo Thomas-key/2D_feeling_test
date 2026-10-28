@@ -33,7 +33,12 @@ def pretrain(dec, world, device, steps, rng):
     for step in range(steps):
         t1 = rng.uniform(-180, 180)
         t2 = rng.uniform(0, 180)
-        target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
+        # 20% 到达样本（目标 = 当前手位置——决策学“不动”）
+        if rng.random() < 0.2:
+            hx0, hy0 = env.forward_kinematics(t1, t2)
+            target = (hx0, hy0)
+        else:
+            target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
         if env.inverse_kinematics(*target) is None:
             continue
         obs = obs_tensor(t1, t2, target, device)
