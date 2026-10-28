@@ -51,6 +51,7 @@ def main():
     p.add_argument("--tasks", type=int, default=0, help="多任务数（0=用 --target）")
     p.add_argument("--target", nargs=2, type=float, default=None, help="单任务目标")
     p.add_argument("--attempts", type=int, default=1, help="每个任务尝试次数")
+    p.add_argument("--eval-only", action="store_true", help="只评估（不训练/不更新）")
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
@@ -69,6 +70,7 @@ def main():
 
     failures = []
     successes = 0
+    results = []      # 每任务：target/可达/成功（完成度对比用）
     # 任务列表（--target 单任务 / --tasks 随机多任务）
     tasks = []
     if args.target is not None:
@@ -107,7 +109,11 @@ def main():
             v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pred[0, 4]
             v_cur = true_value(t1, t2, target)
             if v_new > v_cur + 0.01:
-                # 通过 → 执行 → 世界更新（门控）
+                # 通过 → 执行 → 世界更新（eval-only 跳过更新）
+                if args.eval_only:
+                    t1 = t1 + float(d1)
+                    t2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))
+                    continue
                 o1, o2 = t1, t2
                 t1 = t1 + float(d1)
                 t2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))   # 折叠 160 挡
@@ -134,6 +140,9 @@ def main():
                 opt_d.zero_grad()
                 loss_d.backward()
                 opt_d.step()
+        reachable = vstar(target) > -0.1     # 可达（容忍 0.1——V* > -0.1）
+        results.append({"target": list(target), "reachable": reachable,
+                        "hit": bool(hit), "dist": round(dist, 3)})
         if hit:
             successes += 1
         else:
@@ -152,6 +161,14 @@ def main():
                 "world_heads": world.heads.state_dict(),
                 "world_lora": {k: v.state_dict()
                                for k, v in world.loras_dict().items()}}, "lora_day.pt")
+    # 完成度（可达样本成功率）
+    reach = [r for r in results if r["reachable"]]
+    reach_hit = sum(1 for r in reach if r["hit"])
+    print(f"[completion] 可达样本 {len(reach)}/{len(results)} | 成功 {reach_hit}/{len(reach)} = "
+          f"{reach_hit/max(1,len(reach)):.3f}", flush=True)
+    with open("day_result.json", "w", encoding="utf-8") as f:
+        json.dump({"seed": args.seed, "eval_only": args.eval_only, "results": results},
+                  f, ensure_ascii=False)
     with open("trajectory.json", "w", encoding="utf-8") as f:
         json.dump({"target": list(attempts_list[-1]) if attempts_list else [0, 0],
                    "hit": bool(hit), "traj": traj}, f, ensure_ascii=False)
