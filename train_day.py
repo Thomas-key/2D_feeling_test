@@ -170,7 +170,7 @@ def main():
                                        env.pain(t1, t2) / 30.0,
                                        env.load(t1, t2, None)], device=device)
                 err = (pred.squeeze(0) - actual).abs()
-                if float(err[:2].max()) > 0.1 or float(err[3]) > 1.0:
+                if float(err[:2].max()) > 0.1 or float(err[3]) > 0.1:   # 痛差 >3 即更新
                     pred2 = world(obs, act.detach())
                     loss_w = F.mse_loss(pred2.squeeze(0), actual)
                     opt_w.zero_grad()

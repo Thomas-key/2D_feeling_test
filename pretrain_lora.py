@@ -32,7 +32,11 @@ def pretrain(dec, world, device, steps, rng):
     opt_w = torch.optim.Adam(wbase_params, lr=3e-4)
     for step in range(steps):
         t1 = rng.uniform(-180, 180)
-        t2 = rng.uniform(0, 180)
+        # 初始状态：偶发折叠（θ2 150-180）——让决策学“折叠→展开”
+        if rng.random() < 0.3:
+            t2 = rng.uniform(150, 180)
+        else:
+            t2 = rng.uniform(0, 180)
         target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
         if env.inverse_kinematics(*target) is None:
             continue
