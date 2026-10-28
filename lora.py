@@ -37,7 +37,7 @@ class LoRALinear(torch.nn.Module):
 class DecisionLoRA(torch.nn.Module):
     """决策：base（冻结）+ 输出拆 2 头（大臂/小臂）+ 各 LoRA。"""
 
-    def __init__(self, in_dim=56, hidden=256, r=8):
+    def __init__(self, in_dim=59, hidden=256, r=8):
         super().__init__()
         self.in_dim = in_dim
         self.base = torch.nn.Sequential(
@@ -68,7 +68,7 @@ class DecisionLoRA(torch.nn.Module):
 class WorldLoRA(torch.nn.Module):
     """世界：base（冻结）+ 输出拆 5 头（位置x/y/触觉/痛/负载）+ 各 LoRA。"""
 
-    def __init__(self, in_dim=58, hidden=256, r=8):
+    def __init__(self, in_dim=61, hidden=256, r=8):
         super().__init__()
         self.base = torch.nn.Sequential(
             torch.nn.Linear(in_dim, hidden), torch.nn.ReLU(),

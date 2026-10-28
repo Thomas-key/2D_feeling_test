@@ -209,7 +209,11 @@ def obs_vector(t1, t2, target):
     hx, hy = forward_kinematics(t1, t2)
     dist = math.hypot(hx - target[0], hy - target[1])
     ang = math.degrees(math.atan2(target[1] - hy, target[0] - hx))
-    t1n = (t1 + 180.0) % 360.0 - 180.0   # 肩角归一化到 [-180, 180]
-    return ([t1n / 180.0, t2 / 180.0, hx / 2.0, hy / 2.0,
-             target[0] / 2.0, target[1] / 2.0, dist / 2.0, ang / 180.0]
+    # 角度用 sin/cos 编码（连续——无 ±180 边界跳变）
+    a1 = math.radians(t1)
+    a2 = math.radians(t2)
+    return ([math.sin(a1), math.cos(a1), math.sin(a2), math.cos(a2),
+             hx / 2.0, hy / 2.0,
+             target[0] / 2.0, target[1] / 2.0, dist / 2.0, math.sin(math.radians(ang)),
+             math.cos(math.radians(ang))]
             + grid_sensation(t1, t2, None))
