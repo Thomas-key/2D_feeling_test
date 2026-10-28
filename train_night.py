@@ -15,6 +15,7 @@
 import argparse
 import json
 import math
+import random
 
 import torch
 import torch.nn.functional as F
@@ -49,6 +50,7 @@ def main():
     p.add_argument("--lr", type=float, default=3e-4)
     args = p.parse_args()
     device = torch.device(args.device)
+    rng = random.Random(0)
 
     dec = DecisionLoRA().to(device)
     world = WorldLoRA().to(device)
@@ -82,14 +84,16 @@ def main():
         dist = torch.sqrt((hx - tx) ** 2 + (hy - ty) ** 2 + 1e-6)
         loss_d = dist.mean()
         # 世界：规则监督
-        dr = torch.tensor([[math.sin(step) * 0.5, math.cos(step) * 0.5]], device=device)
+        dr = torch.tensor([[rng.uniform(-1, 1), rng.uniform(-1, 1)]], device=device)
         pred = world(obs, dr)
         nt1 = t1 + float(dr[0, 0]) * 60
         nt2 = min(env.ELBOW_MAX, max(env.ELBOW_MIN, t2 + float(dr[0, 1]) * 60))
         nhx, nhy = env.forward_kinematics(nt1, nt2)
         ohx, ohy = env.forward_kinematics(t1, t2)
-        actual = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2) / 30.0,
-                               env.load(nt1, nt2, None)], device=device)
+        raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2),
+                            env.load(nt1, nt2, None)], device=device)
+        scale = torch.tensor(env.OUT_SCALE, device=device)
+        actual = raw / scale
         err = (pred.squeeze(0) - actual) ** 2
         loss_w = err.mean()
         pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
