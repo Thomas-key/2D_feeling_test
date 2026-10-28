@@ -43,7 +43,9 @@ def main():
                    help="每个任务开始前把 LoRA 清零（每个任务都从 base 重新适应）")
     p.add_argument("--stall-limit", type=int, default=15,
                    help="连续多少步没刷新最近距离就停（100=不让它停）")
-    p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
+    p.add_argument("--lr", type=float, default=1e-4, help="决策 LoRA 学习率")
+    p.add_argument("--world-lr", type=float, default=1e-4,
+                   help="世界 LoRA 学习率（它修的是身体图式，通常需要比决策大得多）")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
     args = p.parse_args()
@@ -65,7 +67,7 @@ def main():
                        + list(dec.loras()["elbow"].parameters()))
     world_lora_params = list(world.loras_dict().parameters())
     opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
-    opt_w = torch.optim.Adam(world_lora_params, lr=args.lr)
+    opt_w = torch.optim.Adam(world_lora_params, lr=args.world_lr)
 
     # 任务列表（--target 单任务 / --tasks 随机多任务）
     tasks = []
@@ -89,7 +91,7 @@ def main():
             for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
                 lora.reset_trainable()   # 注意不是 reset()：全零会让梯度恒为零
             opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
-            opt_w = torch.optim.Adam(world_lora_params, lr=args.lr)
+            opt_w = torch.optim.Adam(world_lora_params, lr=args.world_lr)
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
                        max_steps=args.max_steps, max_retries=args.max_retries,
                        stall_limit=args.stall_limit,
