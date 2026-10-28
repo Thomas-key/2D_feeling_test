@@ -52,7 +52,9 @@ def inverse_kinematics(x, y):
 FOLD_PAIN = 160.0   # θ2 > 160 → 折叠痛（挤压）
 # 世界模型输出尺度（归一化/反归一化）：delta_x, delta_y, touch, pain, load
 OUT_SCALE = [2.0, 2.0, 1.0, 30.0, 1.0]
-FOLD_LIMIT = 160.0  # θ2 折叠极限（动作超此 → 被挡——角度不变+负载升）
+FOLD_LIMIT = 160.0  # 折叠阻力点：之后每推 1° 只挤进去 FOLD_YIELD°
+FOLD_MAX = 180.0    # 绝对上限：到这儿再推也不动
+FOLD_YIELD = 0.25   # 阻力系数（0.25 = 要费约 4 倍的劲）
 
 
 def pain(theta1, theta2):
@@ -99,29 +101,52 @@ def load(theta1, theta2, ball=None):
 PAIN_CAP = 30.0     # 痛觉上限（生物上会饱和；也保证归一化后落在 [0,1]）
 
 
-def step_body(theta1, theta2, d1, d2):
-    """按动作推进一步：位置被身体挡住，感觉按"想去的角度"算。
+def fold_target(theta2, d2):
+    """把"想推到的角度"折算成身体实际能到的角度。
 
-    位置：θ2 最多到 FOLD_LIMIT（160），再推也不动。
-    感觉：痛/负载由"想推到的角度"决定——顶住和痛来自发力，不来自到达。
-    痛不累积：每一步只看这一步推多狠，松手就不痛。
-
-    返回 (θ1', θ2', want2, pain, load)
+    160° 之前自由活动；之后是**阻力不是墙**——每推 1° 只挤进去 FOLD_YIELD°，
+    一直可以挤到 FOLD_MAX。所以推得越狠折得越深，也就越痛（且能一直更痛）。
+    0° 一侧仍是硬夹。
     """
     want2 = theta2 + d2
-    nt1 = theta1 + d1
-    nt2 = min(FOLD_LIMIT, max(ELBOW_MIN, want2))
-    return nt1, nt2, want2, min(PAIN_CAP, pain(nt1, want2)), load(nt1, want2)
+    if want2 <= FOLD_LIMIT:
+        return max(ELBOW_MIN, want2)                     # 自由区
+    if theta2 >= FOLD_LIMIT:                             # 已在阻力区：整个动作打折
+        nt2 = theta2 + d2 * FOLD_YIELD
+    else:                                                # 从自由区越界：只有超出部分打折
+        nt2 = FOLD_LIMIT + (want2 - FOLD_LIMIT) * FOLD_YIELD
+    return min(FOLD_MAX, nt2)
 
 
-def pain_t(want2):
-    """step_body 的可微版痛（与 pain() 同一公式 + PAIN_CAP 饱和）。
+def step_body(theta1, theta2, d1, d2):
+    """按动作推进一步：位置受阻力限制，感觉由**结果状态**决定。
 
-    决策价值靠它把梯度传回动作——"预测掰到 180 会很痛"就是拿超限动作问它。
+    返回 (θ1', θ2', want2, pain, load)
+      want2 只是"想推到的角度"（诊断用）；痛/负载都按实际到达的 θ2' 算。
     """
+    nt1 = theta1 + d1
+    nt2 = fold_target(theta2, d2)
+    return nt1, nt2, theta2 + d2, min(PAIN_CAP, pain(nt1, nt2)), load(nt1, nt2)
+
+
+def step_theta2_t(theta2, d2):
+    """fold_target 的可微版（决策价值里"想象"用），分支与它逐条对应。"""
     import torch
-    p = torch.relu(-want2) + torch.relu(want2 - ELBOW_MAX)
-    p = p + torch.relu(want2 - FOLD_PAIN) * 0.5
+    want2 = theta2 + d2
+    if theta2 >= FOLD_LIMIT:
+        nt2 = torch.where(want2 <= FOLD_LIMIT, want2,
+                          theta2 + d2 * FOLD_YIELD)
+    else:
+        nt2 = torch.where(want2 <= FOLD_LIMIT, want2,
+                          FOLD_LIMIT + (want2 - FOLD_LIMIT) * FOLD_YIELD)
+    return torch.clamp(nt2, min=ELBOW_MIN, max=FOLD_MAX)
+
+
+def pain_t(theta2):
+    """可微版痛（与 pain() 同一公式 + PAIN_CAP 饱和），吃**实际到达**的角度。"""
+    import torch
+    p = torch.relu(-theta2) + torch.relu(theta2 - ELBOW_MAX)
+    p = p + torch.relu(theta2 - FOLD_PAIN) * 0.5
     return torch.clamp(p, max=PAIN_CAP)
 
 
@@ -214,9 +239,9 @@ def grid_sensation(theta1, theta2, ball=None):
     loadv = [0.0] * N_GRID
     painv = [0.0] * N_GRID
     p = pain(theta1, theta2) / 30.0
-    # 折叠：θ2 > 150（小臂贴大臂——反向折叠）→ 触觉/负载
-    if theta2 > 150:
-        fold = min(1.0, (theta2 - 150.0) / 10.0)
+    # 折叠：越过阻力点（160）小臂才真正被压住 → 触觉/负载（与痛边界一致）
+    if theta2 > FOLD_LIMIT:
+        fold = min(1.0, (theta2 - FOLD_LIMIT) / 20.0)
         for i in range(8, 16):
             touch[i] = fold
             loadv[i] = fold
@@ -237,15 +262,22 @@ def grid_sensation(theta1, theta2, ball=None):
 
 # ===== 数值观测向量（纯数值，归一化去量纲）=====
 def obs_vector(t1, t2, target):
-    """数值观测：[角度/180, 手位置/2, 目标/2, 距离/2, 方向/180] + 感觉48 → 56 维。"""
+    """数值观测（61 维）：
+       sin/cos(θ1), θ1/180, sin/cos(θ2), θ2/180,
+       手位置/2, 目标/2, 距离/4, 方向 sin/cos, 感觉网格 48
+
+    角度给两套编码：sin/cos 让位置这类三角量好算且无 ±180 跳变；
+    线性值让"阈值/阻力"这类规则（θ2>160 才痛）在网络里是一个平面，不用反解三角函数。
+    """
     hx, hy = forward_kinematics(t1, t2)
     dist = math.hypot(hx - target[0], hy - target[1])
     ang = math.degrees(math.atan2(target[1] - hy, target[0] - hx))
-    # 角度用 sin/cos 编码（连续——无 ±180 边界跳变）
     a1 = math.radians(t1)
     a2 = math.radians(t2)
-    return ([math.sin(a1), math.cos(a1), math.sin(a2), math.cos(a2),
+    return ([math.sin(a1), math.cos(a1), t1 / 180.0,
+             math.sin(a2), math.cos(a2), t2 / 180.0,
              hx / 2.0, hy / 2.0,
-             target[0] / 2.0, target[1] / 2.0, dist / 2.0, math.sin(math.radians(ang)),
-             math.cos(math.radians(ang))]
+             target[0] / 2.0, target[1] / 2.0,
+             dist / 4.0,
+             math.sin(math.radians(ang)), math.cos(math.radians(ang))]
             + grid_sensation(t1, t2, None))

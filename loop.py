@@ -35,13 +35,26 @@ def obs_tensor(t1, t2, target, device):
 def true_value(t1, t2, target):
     """真实价值（环境真值，不是世界模型预测）。
 
-    痛是瞬时的（只在下一次发力时出现），所以停在某个状态时痛 = env.pain(当前角度)，
-    身体范围内恒为 0——和"痛不累积"一致。
+    痛是状态函数：θ2 越过 160 的阻力点之后才出现，而且越挤越深就越痛
+    （所以"已经很痛了还继续推"会真的更痛）。
     """
     hx, hy = env.forward_kinematics(t1, t2)
     dist = math.hypot(hx - target[0], hy - target[1])
     p = env.pain(t1, t2)
     return -dist - 5.0 * (math.exp(min(p, env.PAIN_CAP) / 10.0) - 1.0) - 2.0 * env.load(t1, t2, None)
+
+
+def world_value(pred_n, hx, hy, target, scale):
+    """世界模型预测的价值（run_task 与诊断脚本共用，保证口径一致）。
+
+    pred_n：归一化预测；scale：OUT_SCALE。
+    痛：上界留（防 exp 爆），下界不夹——世界模型可以预测"负痛"（缓解）。
+    """
+    pn = pred_n * scale
+    nhx, nhy = hx + pn[0, 0], hy + pn[0, 1]
+    dist = torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
+    pain = torch.clamp(pn[0, 3], max=env.PAIN_CAP)
+    return -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0) - 2.0 * pn[0, 4]
 
 
 def vstar(target):
@@ -62,8 +75,7 @@ def state_row(step, t1, t2, target):
 def _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, pain_a, load_a, scale):
     """执行后用真实结果监督世界模型（门控：只学预测得离谱的地方）。返回是否更新了。
 
-    位置：被身体挡住后的角度（t1,t2）。
-    感觉：env.step_body 按"想去的角度"算出来的痛/负载（痛来自发力，不来自到达）。
+    位置和感觉都用 env.step_body 给的真实结果：θ2 受阻力限制，痛/负载由结果角度决定。
     """
     nhx, nhy = env.forward_kinematics(t1, t2)
     ohx, ohy = env.forward_kinematics(o1, o2)
@@ -145,16 +157,11 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
             d1, d2 = dec(obs)
             act = torch.cat([d1, d2], dim=-1) / 60.0
             pred = world(obs, act)
-            pn = pred * scale                                   # 反归一化
-            nhx, nhy = hx + pn[0, 0], hy + pn[0, 1]
-            dist_t = torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
-            # 痛：上界留（防 exp 爆），下界去掉——世界模型可以预测"负痛"（缓解）
-            pain_t = torch.clamp(pn[0, 3], max=env.PAIN_CAP)
-            v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pn[0, 4]
+            v_new = world_value(pred, hx, hy, target, scale)
 
             if float(v_new) > v_cur + ACCEPT_EPS:
                 o1, o2 = t1, t2
-                # 位置被身体挡住（θ2 最多 160），痛/负载按"想去的角度"算
+                # 身体：160 之后是阻力（推 1° 只挤进去 0.25°），痛由结果角度决定
                 t1, t2, _want2, pain_a, load_a = env.step_body(t1, t2, float(d1), float(d2))
                 if not eval_only:
                     if _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2,

@@ -78,7 +78,7 @@ def main():
     opt = torch.optim.Adam(base_params, lr=args.lr)
     for step in range(args.replay):
         t1 = (step * 7.3) % 360 - 180
-        t2 = 30 + (step * 3.1) % 120
+        t2 = (step * 3.1) % 180          # 覆盖到阻力区（160~180 真能挤进去）
         # 规则目标（可达）
         a1 = (step * 11.7) % 360 - 180
         a2 = 20 + (step * 5.3) % 130
@@ -86,14 +86,13 @@ def main():
         obs = obs_tensor(t1, t2, (tx, ty), device)
         d1, d2 = dec(obs)
         # 决策：规则世界想象（价值——距离+痛(指数)——与预训练一致）
-        want2 = t2 + d2
-        t2n = torch.clamp(want2, env.ELBOW_MIN, env.FOLD_LIMIT)   # 身体：最多到 160
+        nt2 = env.step_theta2_t(t2, d2)   # 身体：160 之后是阻力，不是墙
         ra1 = (t1 + d1) * math.pi / 180.0
-        ra2 = ra1 + t2n * math.pi / 180.0
+        ra2 = ra1 + nt2 * math.pi / 180.0
         hx = torch.cos(ra1) + torch.cos(ra2)
         hy = torch.sin(ra1) + torch.sin(ra2)
         dist = torch.sqrt((hx - tx) ** 2 + (hy - ty) ** 2 + 1e-6)
-        pain = env.pain_t(want2)        # 感觉：按"想去的角度"算（越推越痛）
+        pain = env.pain_t(nt2)            # 痛由实际到达的角度决定
         v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
         loss_d = -v.mean()
         # 世界：规则监督
@@ -173,14 +172,13 @@ def main():
         for step in range(args.fail_steps // max(1, len(fails[:20])) or 1):
             obs = obs_tensor(t1, t2, target, device)
             d1, d2 = dec(obs)
-            want2 = t2 + d2
-            t2n = torch.clamp(want2, env.ELBOW_MIN, env.FOLD_LIMIT)   # 身体：最多到 160
+            nt2 = env.step_theta2_t(t2, d2)   # 身体：160 之后是阻力
             a1 = (t1 + d1) * math.pi / 180.0
-            a2 = a1 + t2n * math.pi / 180.0
+            a2 = a1 + nt2 * math.pi / 180.0
             hx = torch.cos(a1) + torch.cos(a2)
             hy = torch.sin(a1) + torch.sin(a2)
             dist = torch.sqrt((hx - target[0]) ** 2 + (hy - target[1]) ** 2 + 1e-6)
-            pain = env.pain_t(want2)    # 感觉：按"想去的角度"算
+            pain = env.pain_t(nt2)            # 痛由实际到达的角度决定
             v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
             loss = -v
             opt_d.zero_grad()

@@ -32,7 +32,7 @@ def pretrain(dec, world, device, steps, rng):
     opt_w = torch.optim.Adam(wbase_params, lr=3e-4)
     for step in range(steps):
         t1 = rng.uniform(-180, 180)
-        t2 = rng.uniform(env.ELBOW_MIN, env.FOLD_LIMIT)   # 状态只用身体到得了的角度
+        t2 = rng.uniform(env.ELBOW_MIN, env.FOLD_MAX)   # 160~180 是"硬挤进去"的，也真能到
         # 20% 到达 + 10% 接近（目标 = 手 + 小偏移——学小动作微调）
         r0 = rng.random()
         if r0 < 0.2:
@@ -50,14 +50,13 @@ def pretrain(dec, world, device, steps, rng):
         obs = obs_tensor(t1, t2, target, device)
         # 决策：规则世界想象
         d1, d2 = dec(obs)
-        want2 = t2 + d2
-        t2n = torch.clamp(want2, env.ELBOW_MIN, env.FOLD_LIMIT)   # 身体：最多到 160
+        nt2 = env.step_theta2_t(t2, d2)          # 身体：160 之后是阻力，不是墙
         a1 = (t1 + d1) * math.pi / 180.0
-        a2 = a1 + t2n * math.pi / 180.0
+        a2 = a1 + nt2 * math.pi / 180.0
         hx = torch.cos(a1) + torch.cos(a2)
         hy = torch.sin(a1) + torch.sin(a2)
         dist = torch.sqrt((hx - target[0]) ** 2 + (hy - target[1]) ** 2 + 1e-6)
-        pain = env.pain_t(want2)        # 感觉：按"想去的角度"算（越推越痛）
+        pain = env.pain_t(nt2)                   # 痛由实际到达的角度决定
         v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
         loss_d = -v
         opt_d.zero_grad()
