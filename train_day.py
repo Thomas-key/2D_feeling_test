@@ -166,6 +166,7 @@ def main():
                 loss_d.backward()
                 opt_d.step()
                 dec_up += 1
+        print(f"[step {step}] dec_up {dec_up} | wm_up {wm_up} | dist {dist:.2f}", flush=True)
         reachable = vstar(target) > -0.1     # 可达（容忍 0.1——V* > -0.1）
         results.append({"target": list(target), "reachable": reachable,
                         "hit": bool(hit), "dist": round(dist, 3)})
