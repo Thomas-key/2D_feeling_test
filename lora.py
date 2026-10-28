@@ -68,8 +68,11 @@ class DecisionLoRA(torch.nn.Module):
 class WorldLoRA(torch.nn.Module):
     """世界：base（冻结）+ 输出拆 5 头（位置x/y/触觉/痛/负载）+ 各 LoRA。"""
 
-    def __init__(self, in_dim=61, hidden=256, r=8):
+    def __init__(self, in_dim=59, hidden=256, r=8):
         super().__init__()
+        # 动作单独嵌入（放大——避免被 obs 淹没）
+        self.act_proj = torch.nn.Sequential(
+            torch.nn.Linear(2, 64), torch.nn.ReLU(), torch.nn.Linear(64, hidden))
         self.base = torch.nn.Sequential(
             torch.nn.Linear(in_dim, hidden), torch.nn.ReLU(),
             torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
@@ -88,7 +91,7 @@ class WorldLoRA(torch.nn.Module):
         })
 
     def forward(self, obs, action):
-        h = self.base(torch.cat([obs, action], dim=-1))
+        h = self.base(obs) + 3.0 * self.act_proj(action)   # 动作放大嵌入
         return torch.cat([self.loras[k](h) for k in self.heads], dim=-1)
 
     def loras_dict(self):
