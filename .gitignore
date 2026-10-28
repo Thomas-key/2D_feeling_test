@@ -28,3 +28,4 @@ hf_cache*/
 .vscode/
 .idea/
 .DS_Store
+day_result.json
