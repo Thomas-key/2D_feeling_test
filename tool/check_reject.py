@@ -43,7 +43,7 @@ def true_value(t1, t2):
 
 
 print(f"目标 {target}")
-print(f"{'状态':>12} | {'实际价值':>7} | {'决策动作':>10} | {'世界价值':>7} | {'实际价值(执行后)':>12} | {'结论':>8}")
+print(f"{'状态':>10} | {'实际位置':>12} | {'实际价值':>7} | {'决策动作':>10} | {'世界价值':>7} | {'实际价值(执行后)':>12} | {'结论':>8}")
 for i in range(0, len(args.states), 2):
     t1, t2 = args.states[i], args.states[i + 1]
     v_cur = true_value(t1, t2)
@@ -62,5 +62,5 @@ for i in range(0, len(args.states), 2):
     nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))
     v_actual = true_value(nt1, nt2)
     verdict = "误拒!" if (v_world <= v_cur + 0.01 and v_actual > v_cur + 0.01) else "正常"
-    print(f"({t1:>5},{t2:>5}) | {v_cur:>7.3f} | ({float(d1):>5.1f},{float(d2):>4.1f}) | "
-          f"{v_world:>7.3f} | {v_actual:>12.3f} | {verdict:>8}")
+    print(f"({t1:>4},{t2:>4}) | ({hx:>5.2f},{hy:>5.2f}) | {v_cur:>7.3f} | "
+          f"({float(d1):>5.1f},{float(d2):>4.1f}) | {v_world:>7.3f} | {v_actual:>12.3f} | {verdict:>8}")
