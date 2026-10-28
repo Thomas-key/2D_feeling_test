@@ -102,7 +102,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", default="cuda")
     p.add_argument("--tasks", type=int, default=100)
-    p.add_argument("--pretrain-steps", type=int, default=5000)
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
@@ -112,9 +111,6 @@ def main():
     rng = random.Random(args.seed)
     dec = DecisionLoRA().to(device)
     world = WorldLoRA().to(device)
-
-    # 1. 预训练 base
-    pretrain(dec, world, device, args.pretrain_steps, rng)
 
     # 2. 白天：任务循环（LoRA 更新）
     dec_lora_params = list(dec.loras()["shoulder"].parameters()) + list(dec.loras()["elbow"].parameters())
