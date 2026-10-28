@@ -31,6 +31,10 @@ HIT_DIST = 0.1      # 到达判定（米）
 ACCEPT_EPS = 0.01   # 价值至少提升这么多才执行（平手不走）
 SAFE_PAIN = 1.0     # 安全门：预测痛允许比当前多这么多
 SAFE_LOAD = 0.5     # 安全门：预测负载允许比当前多这么多
+# 世界更新门控（归一化误差，换算成价值都 ≥ 接受门槛的 4 倍才值得学）
+GATE_POS = 0.05     # ×2  = 0.10 米
+GATE_PAIN = 0.02    # ×30 = 0.60 分痛
+GATE_LOAD = 0.02    # ×1  = 0.02 负载 → 价值 0.04
 
 
 def obs_tensor(t1, t2, target, device):
@@ -94,7 +98,11 @@ def _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, pain_a, load_a, 
     raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=scale.device)
     actual = raw / scale
     err = (pred.squeeze(0) - actual).abs()
-    if float(err[:2].max()) <= 0.1 and float(err[3]) <= 0.1:
+    # 三项都要查：以前只查位置和痛，负载偏 0.046（价值 0.09，门槛的 9 倍）
+    # 却永远触发不了更新——它就是"智能体总觉得自己更累"的来源。
+    if (float(err[:2].max()) <= GATE_POS           # 位置
+            and float(err[3]) <= GATE_PAIN         # 痛
+            and float(err[4]) <= GATE_LOAD):       # 负载
         return False
     pred2 = world(obs, act.detach())
     loss = ((pred2.squeeze(0) - actual) ** 2).mean()
