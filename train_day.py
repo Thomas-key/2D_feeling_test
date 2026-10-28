@@ -52,6 +52,7 @@ def main():
     p.add_argument("--target", nargs=2, type=float, default=None, help="单任务目标")
     p.add_argument("--attempts", type=int, default=1, help="每个任务尝试次数")
     p.add_argument("--eval-only", action="store_true", help="只评估（不训练/不更新）")
+    p.add_argument("--base", default="pretrain_base.pt", help="加载的 base（睡后评估用 night_base.pt）")
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
