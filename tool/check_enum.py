@@ -41,8 +41,8 @@ def true_value(a1, a2):
 v_cur = true_value(t1, t2)
 print(f"状态 ({t1},{t2}) 手=({hx:.2f},{hy:.2f}) 目标={target} 当前价值 {v_cur:.3f}")
 print(f"{'动作':>10} | {'世界预测价值':>10} | {'实际价值':>8} | {'世界误判?':>8}")
-for d1 in (-30, -15, 0, 15, 30):
-    for d2 in (-15, 0, 15):
+for d1 in (-10, -5, -2, 0, 2, 5, 10):
+    for d2 in (-5, 0, 5):
         obs = torch.tensor(env.obs_vector(t1, t2, target), dtype=torch.float32, device=device).unsqueeze(0)
         act = torch.tensor([[d1 / 60.0, d2 / 60.0]], dtype=torch.float32, device=device)
         with torch.no_grad():
