@@ -63,6 +63,22 @@ def main():
     dec = DecisionLoRA().to(device)
     world = WorldLoRA().to(device)
 
+    # 1. 加载 base（预训练 pretrain_base / 睡后 night_base）
+    import os
+    if os.path.exists(args.base):
+        ckpt = torch.load(args.base, map_location="cpu")
+        dec.base.load_state_dict(ckpt["dec_base"])
+        for k in ("head_shoulder", "head_elbow"):
+            getattr(dec, k).load_state_dict(ckpt["dec_heads"][k])
+        world.base.load_state_dict(ckpt["world_base"])
+        world.heads.load_state_dict(ckpt["world_heads"])
+        if "world_lora" in ckpt:
+            for k, lora in world.loras_dict().items():
+                lora.load_state_dict(ckpt["world_lora"][k])
+        print(f"[init] base: {args.base}", flush=True)
+    else:
+        print(f"[warn] 无 {args.base}——base 随机！先跑 pretrain_lora.py", flush=True)
+
     # 2. 白天：任务循环（LoRA 更新）
     dec_lora_params = list(dec.loras()["shoulder"].parameters()) + list(dec.loras()["elbow"].parameters())
     world_lora_params = list(world.loras_dict().parameters())
