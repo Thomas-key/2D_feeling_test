@@ -88,7 +88,8 @@ def main():
         reachable = vstar(target) > -0.1     # 可达（容忍 0.1——V* > -0.1）
         results.append({"target": list(target), "reachable": reachable,
                         "hit": bool(res["hit"]), "dist": res["dist"],
-                        "steps": res["steps"], "gave_up": res["gave_up"]})
+                        "steps": res["steps"], "dec_up": res["dec_up"],
+                        "gave_up": res["gave_up"]})
         if res["hit"]:
             successes += 1
         else:
