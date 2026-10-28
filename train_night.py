@@ -10,8 +10,13 @@
 全程 LoRA 冻在 0：睡觉 = 大幅改长期权重（base），生活 = 小幅改 LoRA。
 所以这里优化器里只有 base/heads，不出现 A/B；存档里 LoRA 一定是空的。
 
+⚠️ 回放的学习率必须是**微调级**（默认 3e-5），不能沿用预训练的 3e-4：
+   实测 lr=3e-4 时，仅仅 200 步回放就把 merge 的成果从 73.9% 擦到 56.5%；
+   而 lr=3e-5 跑 2000 步（同样总位移）反而升到 80.4%。
+   原因：大 lr 时每一步被单样本梯度噪声主导，等于随机推搡；小 lr 才能把噪声平均掉。
+
 用法：
-  python train_night.py --device cuda --replay 2000 --fail-steps 4000
+  python train_night.py --device cuda --replay 2000 --fail-steps 0
 """
 
 import argparse
@@ -49,7 +54,8 @@ def main():
     p.add_argument("--device", default="cuda")
     p.add_argument("--replay", type=int, default=2000)    # 复习预训练数据
     p.add_argument("--fail-steps", type=int, default=4000)  # 失败状态（200/状态）
-    p.add_argument("--lr", type=float, default=3e-4, help="回放（base 的学习率）")
+    p.add_argument("--lr", type=float, default=3e-5,
+                   help="回放（微调级学习率——预训练的 3e-4 用来微调收敛后的 base 会把它擦掉）")
     p.add_argument("--fail-lr", type=float, default=1e-4, help="失败状态修正（base 的学习率）")
     args = p.parse_args()
     device = torch.device(args.device)
