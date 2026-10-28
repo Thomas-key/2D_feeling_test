@@ -1,0 +1,30 @@
+# 模型权重（预训练/训练产物——不提交）
+*.pt
+*.pth
+*.ckpt
+
+# 训练产物（运行时生成）
+trajectory.json
+failures.json
+lora_day.pt
+pretrain_base.pt
+night_base.pt
+lora_success.pt
+decision_exec_best.pt
+world_best.pt
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 数据/缓存
+data/
+hf_cache*/
+.cache/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
