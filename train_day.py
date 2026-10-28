@@ -101,7 +101,9 @@ def pretrain(dec, world, device, steps, rng):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", default="cuda")
-    p.add_argument("--tasks", type=int, default=100)
+    p.add_argument("--tasks", type=int, default=0, help="多任务数（0=用 --target）")
+    p.add_argument("--target", nargs=2, type=float, default=None, help="单任务目标")
+    p.add_argument("--attempts", type=int, default=1, help="每个任务尝试次数")
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
@@ -120,8 +122,18 @@ def main():
 
     failures = []
     successes = 0
-    for task in range(args.tasks):
-        target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
+    # 任务列表（--target 单任务 / --tasks 随机多任务）
+    tasks = []
+    if args.target is not None:
+        tasks = [tuple(args.target)]
+    else:
+        for _ in range(args.tasks):
+            tg = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
+            if env.inverse_kinematics(*tg) is not None:
+                tasks.append(tg)
+    # 展开 attempts（每任务尝试多次）
+    attempts_list = [tg for tg in tasks for _ in range(max(1, args.attempts))]
+    for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
             continue
         t1 = rng.uniform(-180, 180)
