@@ -50,6 +50,7 @@ def inverse_kinematics(x, y):
 
 
 FOLD_PAIN = 160.0   # θ2 > 160 → 折叠痛（挤压）
+FOLD_LIMIT = 160.0  # θ2 折叠极限（动作超此 → 被挡——角度不变+负载升）
 
 
 def pain(theta1, theta2):
@@ -182,9 +183,9 @@ def grid_sensation(theta1, theta2, ball=None):
     loadv = [0.0] * N_GRID
     painv = [0.0] * N_GRID
     p = pain(theta1, theta2) / 30.0
-    # 折叠：小臂网格（8-15）触觉/负载
-    if theta2 < 15:
-        fold = 1.0 - theta2 / 15.0
+    # 折叠：θ2 > 150（小臂贴大臂——反向折叠）→ 触觉/负载
+    if theta2 > 150:
+        fold = min(1.0, (theta2 - 150.0) / 10.0)
         for i in range(8, 16):
             touch[i] = fold
             loadv[i] = fold

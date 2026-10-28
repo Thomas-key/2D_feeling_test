@@ -163,7 +163,7 @@ def main():
                 # 通过 → 执行 → 世界更新（门控）
                 o1, o2 = t1, t2
                 t1 = t1 + float(d1)
-                t2 = min(env.ELBOW_MAX, max(env.ELBOW_MIN, t2 + float(d2)))
+                t2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))   # 折叠 160 挡
                 nhx2, nhy2 = env.forward_kinematics(t1, t2)
                 ohx, ohy = env.forward_kinematics(o1, o2)
                 actual = torch.tensor([nhx2 - ohx, nhy2 - ohy, 0.0,
