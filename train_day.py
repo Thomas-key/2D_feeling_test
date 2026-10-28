@@ -87,7 +87,7 @@ def main():
             continue
         if args.per_task_reset:      # 每个任务都从同一份 base 重新适应
             for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
-                lora.reset()
+                lora.reset_trainable()   # 注意不是 reset()：全零会让梯度恒为零
             opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
             opt_w = torch.optim.Adam(world_lora_params, lr=args.lr)
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,

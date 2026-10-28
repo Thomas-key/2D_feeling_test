@@ -30,8 +30,21 @@ class LoRALinear(torch.nn.Module):
         self.B.data.zero_()
 
     def reset(self):
+        """清零（合并进 base 之后用——之后不再训练它）。"""
         self.A.data.zero_()
         self.B.data.zero_()
+
+    def reset_trainable(self):
+        """回到"新 LoRA"的状态：A 随机小值、B 为零。
+
+        不能直接用 reset()：A、B 全零时前向对两者的梯度都为零
+        （B 的梯度 ∝ A，A 的梯度 ∝ B），LoRA 会变成永远学不动的死参数。
+        原始初始化 A~N(0,0.01)、B=0 正是为了让 B 先有梯度，
+        同时保证初始前向等于 base（适配器零影响）。
+        """
+        with torch.no_grad():
+            self.A.normal_(0.0, 0.01)
+            self.B.zero_()
 
 
 class DecisionLoRA(torch.nn.Module):
