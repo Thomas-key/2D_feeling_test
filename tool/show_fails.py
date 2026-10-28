@@ -10,6 +10,7 @@
 """
 
 import json
+import math
 import sys
 
 
@@ -22,7 +23,7 @@ def main():
     print(f"{path}：失败 {len(fails)}/{len(rs)}")
     if not fails:
         return 0
-    print(f"{'目标':>18} | {'距离':>6} | {'步数':>4} | {'决策更新':>8} | 停因")
+    print(f"{'目标':>18} | {'距离':>6} | {'到肩':>5} | {'需θ2':>5} | {'痛':>4} | {'步数':>4} | {'更新':>6} | 停因")
     n_stall = n_max = n_unsafe = 0
     for r in fails:
         steps = r.get("steps", 0)
@@ -43,8 +44,12 @@ def main():
         else:
             why = "其它"
         tg = r["target"]
-        print(f"({tg[0]:>6.2f},{tg[1]:>6.2f}) | {r['dist']:>6.3f} | {steps:>4} | "
-              f"{dec_up:>8} | {why}")
+        rad = math.hypot(tg[0], tg[1])
+        c = max(-1.0, min(1.0, (rad * rad - 2.0) / 2.0))
+        need = math.degrees(math.acos(c))
+        pain = max(0.0, need - 160.0) * 0.5
+        print(f"({tg[0]:>6.2f},{tg[1]:>6.2f}) | {r['dist']:>6.3f} | {rad:>5.2f} | "
+              f"{need:>5.0f} | {pain:>4.1f} | {steps:>4} | {dec_up:>6} | {why}")
     print()
     print(f"停滞 {n_stall} | 打满步数 {n_max} | 不安全 {n_unsafe}")
     print("提示：eval_only 不更新决策，dec_up 恒为 0；此时每个状态只评估一次候选动作。")
