@@ -29,6 +29,7 @@ def main():
     p.add_argument("--t2", type=float, default=90.0)
     p.add_argument("--steps", type=int, default=100, help="最多接受多少次移动")
     p.add_argument("--retries", type=int, default=50, help="同一个状态最多试几次")
+    p.add_argument("--stall-limit", type=int, default=15, help="连续多少步没更近就停")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--base", default="pretrain_base.pt")
     p.add_argument("--best-decision", default="decision_best.pt")
@@ -48,7 +49,8 @@ def main():
 
     target = (args.target[0], args.target[1])
     res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
-                   max_steps=args.steps, max_retries=args.retries, verbose=True)
+                   max_steps=args.steps, max_retries=args.retries,
+                   stall_limit=args.stall_limit, verbose=True)
 
     if res["hit"]:
         torch.save({"dec_lora": {k: v.state_dict() for k, v in dec.loras().items()}},

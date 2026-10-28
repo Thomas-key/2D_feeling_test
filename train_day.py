@@ -39,6 +39,8 @@ def main():
     p.add_argument("--t2", type=float, default=90.0, help="初始 θ2")
     p.add_argument("--max-steps", type=int, default=100, help="最多接受多少次移动")
     p.add_argument("--max-retries", type=int, default=50, help="同一个状态最多试几次")
+    p.add_argument("--stall-limit", type=int, default=15,
+                   help="连续多少步没刷新最近距离就停（100=不让它停）")
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
@@ -81,6 +83,7 @@ def main():
             continue
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
                        max_steps=args.max_steps, max_retries=args.max_retries,
+                       stall_limit=args.stall_limit,
                        eval_only=args.eval_only, verbose=verbose)
         last = res
         dec_up += res["dec_up"]
