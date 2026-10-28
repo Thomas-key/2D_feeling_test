@@ -60,8 +60,11 @@ def pretrain(dec, world, device, steps, rng):
         nnt2 = min(env.ELBOW_MAX, max(env.ELBOW_MIN, t2 + d2r))
         nhx, nhy = env.forward_kinematics(nt1, nnt2)
         ohx, ohy = env.forward_kinematics(t1, t2)
-        actual = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nnt2) / 30.0,
-                               env.load(nt1, nnt2, None)], device=device)
+        # 输出归一化（去量纲——每头各自尺度）
+        actual_raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nnt2),
+                                   env.load(nt1, nnt2, None)], device=device)
+        scale = torch.tensor(env.OUT_SCALE, device=device)
+        actual = actual_raw / scale
         # 痛项加权（样本少——避免欠拟合）
         err = (pred.squeeze(0) - actual) ** 2
         w = torch.ones(5, device=device)

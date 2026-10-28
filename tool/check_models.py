@@ -63,7 +63,11 @@ def main():
         obs = obs_tensor(t1, t2, (1.0, 1.0), device)
         act = torch.tensor([[d1 / 60.0, d2 / 60.0]], dtype=torch.float32, device=device)
         with torch.no_grad():
-            pred = world(obs, act)
+                pred = world(obs, act)
+        # 反归一化（量纲还原）
+        import torch as _t
+        scale = _t.tensor(env.OUT_SCALE, device=pred.device)
+        pred = pred * scale
         px, py = hx + float(pred[0, 0]), hy + float(pred[0, 1])
         ax, ay = env.forward_kinematics(t1 + d1, min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2)))
         err = math.hypot(px - ax, py - ay)

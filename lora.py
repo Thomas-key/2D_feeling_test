@@ -70,16 +70,11 @@ class WorldLoRA(torch.nn.Module):
 
     def __init__(self, in_dim=59, hidden=256, r=8):
         super().__init__()
-        # 动作嵌入（拼接——独立特征；输入已归一化去量纲）
-        self.act_proj = torch.nn.Sequential(
-            torch.nn.Linear(2, 64), torch.nn.ReLU(), torch.nn.Linear(64, hidden))
+        # 简单拼接（像旧版 WorldNum）：cat([obs, action]) 直接进 MLP
         self.base = torch.nn.Sequential(
-            torch.nn.Linear(in_dim, hidden), torch.nn.ReLU(),
+            torch.nn.Linear(in_dim + 2, hidden), torch.nn.ReLU(),
             torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
         )
-        # 拼接后融合（obs 特征 + act 特征）
-        self.fuse = torch.nn.Sequential(
-            torch.nn.Linear(2 * hidden, hidden), torch.nn.ReLU())
         for prm in self.base.parameters():
             prm.requires_grad = False
         self.heads = torch.nn.ModuleDict({
@@ -94,7 +89,7 @@ class WorldLoRA(torch.nn.Module):
         })
 
     def forward(self, obs, action):
-        h = self.fuse(torch.cat([self.base(obs), self.act_proj(action)], dim=-1))
+        h = self.base(torch.cat([obs, action], dim=-1))   # 直接拼接
         return torch.cat([self.loras[k](h) for k in self.heads], dim=-1)
 
     def loras_dict(self):

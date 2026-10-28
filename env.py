@@ -50,6 +50,8 @@ def inverse_kinematics(x, y):
 
 
 FOLD_PAIN = 160.0   # θ2 > 160 → 折叠痛（挤压）
+# 世界模型输出尺度（归一化/反归一化）：delta_x, delta_y, touch, pain, load
+OUT_SCALE = [2.0, 2.0, 1.0, 30.0, 1.0]
 FOLD_LIMIT = 160.0  # θ2 折叠极限（动作超此 → 被挡——角度不变+负载升）
 
 
