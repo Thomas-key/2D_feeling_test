@@ -138,11 +138,14 @@ def main():
             continue
         t1 = rng.uniform(-180, 180)
         t2 = rng.uniform(0, 180)
+        traj = []          # 本尝试轨迹（最后保存）
         hit = False
         dist = 9.0
         for step in range(args.max_steps):
             hx, hy = env.forward_kinematics(t1, t2)
             dist = math.hypot(hx - target[0], hy - target[1])
+            traj.append({"step": step, "t1": round(t1, 1), "t2": round(t2, 1),
+                         "x": round(hx, 2), "y": round(hy, 2), "dist": round(dist, 2)})
             if dist < 0.1:
                 hit = True
                 break
@@ -196,6 +199,9 @@ def main():
                 "world_heads": world.heads.state_dict(),
                 "world_lora": {k: v.state_dict()
                                for k, v in world.loras_dict().items()}}, "lora_day.pt")
+    with open("trajectory.json", "w", encoding="utf-8") as f:
+        json.dump({"target": list(attempts_list[-1]) if attempts_list else [0, 0],
+                   "hit": bool(hit), "traj": traj}, f, ensure_ascii=False)
     with open("failures.json", "w", encoding="utf-8") as f:
         json.dump(failures, f, ensure_ascii=False, indent=1)
     print(f"[save] lora_day.pt（{successes} 成功）| failures.json（{len(failures)} 失败）", flush=True)

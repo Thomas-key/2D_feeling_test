@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>2D 手臂轨迹查看器</title>
+<style>
+body { background:#111; color:#eee; font-family:monospace; margin:0; padding:20px; }
+#drop { border:2px dashed #555; border-radius:8px; padding:30px; text-align:center;
+        color:#888; margin-bottom:16px; }
+#drop.hover { border-color:#4af; color:#4af; }
+canvas { background:#1a1a1a; border:1px solid #555; }
+#info { margin-top:10px; white-space:pre; color:#9cf; }
+</style>
+</head>
+<body>
+<h3>2D 手臂轨迹查看器（把 trajectory.json 拖进来）</h3>
+<div id="drop">拖拽 trajectory.json 到这里</div>
+<canvas id="cv" width="700" height="700"></canvas>
+<div id="info">等待 JSON…</div>
+<script>
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height, SCALE = 150, CX = W/2, CY = H/2;
+let DATA = null, idx = 0, timer = null;
+
+function toCanvas(x, y) { return [CX + x*SCALE, CY - y*SCALE]; }
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  // 网格
+  ctx.strokeStyle = '#333'; ctx.beginPath();
+  for (let i=-2; i<=2; i++) {
+    const [gx] = toCanvas(i,0), [,gy] = toCanvas(0,i);
+    ctx.moveTo(gx,0); ctx.lineTo(gx,H); ctx.moveTo(0,gy); ctx.lineTo(W,gy);
+  }
+  ctx.stroke();
+  if (!DATA) return;
+  const [tx,ty] = toCanvas(DATA.target[0], DATA.target[1]);
+  // 轨迹
+  ctx.strokeStyle = '#3a6'; ctx.lineWidth = 2; ctx.beginPath();
+  DATA.traj.forEach((p,i) => { const [px,py] = toCanvas(p.x,p.y);
+    if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
+  ctx.stroke();
+  // 目标
+  ctx.fillStyle = '#e33'; ctx.beginPath(); ctx.arc(tx,ty,7,0,6.283); ctx.fill();
+  // 当前手臂
+  const p = DATA.traj[Math.min(idx, DATA.traj.length-1)];
+  const a1 = p.t1*Math.PI/180, a2 = p.t2*Math.PI/180;
+  const ex = Math.cos(a1), ey = Math.sin(a1);
+  const hx = ex + Math.cos(a1+a2), hy = ey + Math.sin(a1+a2);
+  const [sx,sy] = toCanvas(0,0), [exx,eyy] = toCanvas(ex,ey), [hxx,hyy] = toCanvas(hx,hy);
+  ctx.strokeStyle = '#4af'; ctx.lineWidth = 8; ctx.beginPath();
+  ctx.moveTo(sx,sy); ctx.lineTo(exx,eyy); ctx.stroke();
+  ctx.strokeStyle = '#8cf'; ctx.lineWidth = 6; ctx.beginPath();
+  ctx.moveTo(exx,eyy); ctx.lineTo(hxx,hyy); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(sx,sy,5,0,6.283); ctx.fill();
+  ctx.beginPath(); ctx.arc(hxx,hyy,5,0,6.283); ctx.fill();
+  document.getElementById('info').textContent =
+    `step ${p.step}/${DATA.traj.length-1} | θ1=${p.t1}° θ2=${p.t2}° | 手=(${p.x},${p.y}) | 距离=${p.dist} | 到达=${DATA.hit}`;
+}
+
+function loop() { idx = (idx+1) % Math.max(1, DATA.traj.length); draw(); }
+function animate() { clearInterval(timer); idx = 0; timer = setInterval(loop, 150); }
+
+function load(data) {
+  DATA = data; idx = 0;
+  document.getElementById('info').textContent = '加载成功——开始播放';
+  draw(); animate();
+}
+
+const drop = document.getElementById('drop');
+['dragover','dragenter'].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.add('hover'); }));
+['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.remove('hover'); }));
+drop.addEventListener('drop', ev => {
+  const f = ev.dataTransfer.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { try { load(JSON.parse(r.result)); } catch(e) { alert('JSON 解析失败: '+e); } };
+  r.readAsText(f);
+});
+</script>
+</body>
+</html>
