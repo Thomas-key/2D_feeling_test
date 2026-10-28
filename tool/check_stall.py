@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""check_stall.py — 那些失败的任务，到底是"不会走"还是"走得动却被门拦了"？
+"""check_stall.py — 失败任务为什么过不去？把世界模型的预测拆开看
 
-背景：基线只有 50% 成功。夜间失败状态算出的"当前价值"经常是 -0.001，
-看起来决策下一步就能贴到目标——但白天它就是过不去。
-这个脚本把每个失败状态摊开，判断三类原因：
+初版只分了"一步能不能到"，但实测发现决策的动作几乎都在改善（真实 ΔV 多为正），
+而世界模型几乎一律预测为变差——所以关键是：**它到底错在哪个头**。
 
-  ① 一步就能到（真实最优 < 0.1 米），且决策选的动作也能到 → 验证门误拒
-  ② 一步就能到，但决策选的动作到不了 → 决策选错（技能问题）
-  ③ 一步到不了（真实最优 ≥ 0.1 米） → 技能确实缺失
+每行给出：预测 vs 真实的 距离 / 痛 / 负载，以及 ΔV 的世界值/真实值。
+最后统计三个头各自的平均偏差（正数=预测偏大，悲观/乐观一眼看出来）。
 
 用法：
   python train_day.py --device cuda --tasks 50 --eval-only --base pretrain_base.pt
@@ -26,9 +24,13 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import env
 from lora import DecisionLoRA, WorldLoRA
-from loop import ACCEPT_EPS, HIT_DIST, load_base, obs_tensor, true_value, world_value
+from loop import ACCEPT_EPS, load_base, obs_tensor, true_value, world_value
 
 GRID = (-60, -30, -10, -2, 0, 2, 10, 30, 60)
+
+
+def v_of(dist, pain, load):
+    return -dist - 5.0 * (math.exp(min(pain, env.PAIN_CAP) / 10.0) - 1.0) - 2.0 * load
 
 
 def main():
@@ -44,17 +46,13 @@ def main():
     load_base(dec, world, args.base)
     scale = torch.tensor(env.OUT_SCALE, device=device)
 
-    try:
-        with open(args.failures, encoding="utf-8") as f:
-            fails = json.load(f)
-    except FileNotFoundError:
-        print(f"没有 {args.failures}——先跑一次 train_day 生成失败清单")
-        return 2
+    with open(args.failures, encoding="utf-8") as f:
+        fails = json.load(f)
 
-    n_gate = n_wrong = n_skill = 0
-    print(f"base={args.base}  失败状态 {len(fails)} 个\n")
-    print(f"{'状态':>16} | {'目标':>16} | {'dist':>5} | {'决策动作':>12} | "
-          f"{'世界ΔV':>8} | {'真实ΔV':>8} | {'真实最优一步':>10} | 判定")
+    print(f"base={args.base}  失败状态 {len(fails)} 个")
+    print("列：当前 dist | 动作 | 预测(距离/痛/负载) | 真实(距离/痛/负载) | ΔV 世界 / 真实\n")
+
+    acc = {"dd": 0.0, "dp": 0.0, "dl": 0.0, "dw": 0.0, "dt": 0.0, "n": 0, "one": 0, "reach": 0}
     for fail in fails:
         target = tuple(fail["target"])
         t1, t2 = fail["t1"], fail["t2"]
@@ -66,44 +64,51 @@ def main():
         with torch.no_grad():
             d1, d2 = dec(obs)
             act = torch.cat([d1, d2], dim=-1) / 60.0
-            v_w = float(world_value(world(obs, act), hx, hy, target, scale))
+            pred = world(obs, act)
+            pn = pred * scale
+            px, py = hx + float(pn[0, 0]), hy + float(pn[0, 1])
+            pred_dist = math.hypot(px - target[0], py - target[1])
+            pred_pain = float(pn[0, 3])
+            pred_load = float(pn[0, 4])
+            v_w = float(world_value(pred, hx, hy, target, scale))
         d1f, d2f = float(d1), float(d2)
 
-        # 决策这个动作，真实执行后会怎样
         nt1, nt2, _w, pain_a, load_a = env.step_body(t1, t2, d1f, d2f)
         ahx, ahy = env.forward_kinematics(nt1, nt2)
-        dist_act = math.hypot(ahx - target[0], ahy - target[1])
-        v_t = (-math.hypot(ahx - target[0], ahy - target[1])
-               - 5.0 * (math.exp(min(pain_a, env.PAIN_CAP) / 10.0) - 1.0)
-               - 2.0 * load_a)
+        true_dist = math.hypot(ahx - target[0], ahy - target[1])
+        v_t = v_of(true_dist, pain_a, load_a)
 
-        # 这个状态上，真实最优的一步能到多近？
         best = 9.0
         for g1 in GRID:
             for g2 in GRID:
                 b1, b2 = env.forward_kinematics(*env.step_body(t1, t2, g1, g2)[:2])
                 best = min(best, math.hypot(b1 - target[0], b2 - target[1]))
 
-        dv_w, dv_t = v_w - v_cur, v_t - v_cur
-        if best < HIT_DIST:                     # 一步就能到
-            if dist_act < HIT_DIST and dv_w <= ACCEPT_EPS:
-                blame, n_gate = "门误拒", n_gate + 1
-            elif dist_act >= HIT_DIST:
-                blame, n_wrong = "选错动作", n_wrong + 1
-            else:
-                blame = "门误拒?"
-                n_gate += 1
-        else:
-            blame, n_skill = "技能缺失", n_skill + 1
+        acc["dd"] += pred_dist - true_dist
+        acc["dp"] += pred_pain - pain_a
+        acc["dl"] += pred_load - load_a
+        acc["dw"] += v_w - v_cur
+        acc["dt"] += v_t - v_cur
+        acc["n"] += 1
+        acc["one"] += 1 if best < 0.1 else 0
+        acc["reach"] += 1 if true_dist < 0.1 else 0
 
-        print(f"({t1:>6.1f},{t2:>5.1f}) | ({target[0]:>6.2f},{target[1]:>6.2f}) | {dist:>5.2f} | "
-              f"({d1f:>5.1f},{d2f:>5.1f}) | {dv_w:>8.3f} | {dv_t:>8.3f} | {best:>10.2f} | {blame}")
+        print(f"d={dist:>4.2f} | ({d1f:>5.1f},{d2f:>5.1f}) | "
+              f"{pred_dist:>5.2f}/{pred_pain:>4.1f}/{pred_load:>4.2f} | "
+              f"{true_dist:>5.2f}/{pain_a:>4.1f}/{load_a:>4.2f} | "
+              f"{v_w - v_cur:>7.3f} / {v_t - v_cur:>6.3f}")
 
-    n = max(1, len(fails))
+    n = max(1, acc["n"])
     print()
-    print(f"门误拒（一步能到、决策也对，但世界ΔV 没过线）：{n_gate}/{len(fails)} = {n_gate/n:.0%}")
-    print(f"选错动作（一步能到，但决策挑的动作到不了）：    {n_wrong}/{len(fails)} = {n_wrong/n:.0%}")
-    print(f"技能缺失（这个状态一步到不了目标）：            {n_skill}/{len(fails)} = {n_skill/n:.0%}")
+    print(f"平均偏差（预测 − 真实）：距离 {acc['dd'] / n:+.3f} 米 | "
+          f"痛 {acc['dp'] / n:+.2f} | 负载 {acc['dl'] / n:+.3f}")
+    print(f"平均 ΔV：世界 {acc['dw'] / n:+.3f} | 真实 {acc['dt'] / n:+.3f} | "
+          f"偏差 {acc['dw'] / n - acc['dt'] / n:+.3f}")
+    print(f"决策这一动作真能到（<0.1m）：{acc['reach']}/{n}；"
+          f"该状态一步能到（枚举 9×9）：{acc['one']}/{n}")
+    print()
+    print("读法：距离偏差为正=预测比实际远（悲观）；痛/负载偏差为正=多预测了（更保守）")
+    print(f"验证门：世界 ΔV 需要 > {ACCEPT_EPS}")
     return 0
 
 
