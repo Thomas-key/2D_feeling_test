@@ -62,7 +62,11 @@ def pretrain(dec, world, device, steps, rng):
         ohx, ohy = env.forward_kinematics(t1, t2)
         actual = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nnt2) / 30.0,
                                env.load(nt1, nnt2, None)], device=device)
-        loss_w = F.mse_loss(pred.squeeze(0), actual)
+        # 痛项加权（样本少——避免欠拟合）
+        err = (pred.squeeze(0) - actual) ** 2
+        w = torch.ones(5, device=device)
+        w[3] = 10.0 if float(actual[3]) > 0.05 else 1.0    # 痛样本 ×10
+        loss_w = (err * w).mean()
         opt_w.zero_grad()
         loss_w.backward()
         opt_w.step()

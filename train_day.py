@@ -144,7 +144,8 @@ def main():
         for step in range(args.max_steps):
             hx, hy = env.forward_kinematics(t1, t2)
             dist = math.hypot(hx - target[0], hy - target[1])
-            traj.append({"step": step, "t1": round(t1, 1), "t2": round(t2, 1),
+            t1d = (t1 + 180.0) % 360.0 - 180.0        # 显示归一化
+            traj.append({"step": step, "t1": round(t1d, 1), "t2": round(t2, 1),
                          "x": round(hx, 2), "y": round(hy, 2), "dist": round(dist, 2)})
             if dist < 0.1:
                 hit = True
