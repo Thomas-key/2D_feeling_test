@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 import env
 from lora import DecisionLoRA, WorldLoRA
-from train_day import obs_tensor, pretrain as _unused  # noqa
+from train_day import obs_tensor
 
 def pretrain(dec, world, device, steps, rng):
     """预训练 base：决策（规则世界想象）+ 世界（规则数据监督）。"""
@@ -65,11 +65,13 @@ def pretrain(dec, world, device, steps, rng):
                                    env.load(nt1, nnt2, None)], device=device)
         scale = torch.tensor(env.OUT_SCALE, device=device)
         actual = actual_raw / scale
-        # 痛项加权（样本少——避免欠拟合）
+        # 痛项用指数 loss（价值一致——痛非线性）；其他线性 MSE
         err = (pred.squeeze(0) - actual) ** 2
-        w = torch.ones(5, device=device)
-        w[3] = 10.0 if float(actual[3]) > 0.05 else 1.0    # 痛样本 ×10
-        loss_w = (err * w).mean()
+        loss_w = err.mean()
+        # 痛项：指数差（pred/actual 的痛——归一化值 ×30 还原痛度）
+        pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
+        pain_act = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
+        loss_w = loss_w + 0.5 * (pain_pred - pain_act) ** 2
         opt_w.zero_grad()
         loss_w.backward()
         opt_w.step()

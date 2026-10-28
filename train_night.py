@@ -90,7 +90,11 @@ def main():
         ohx, ohy = env.forward_kinematics(t1, t2)
         actual = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2) / 30.0,
                                env.load(nt1, nt2, None)], device=device)
-        loss_w = F.mse_loss(pred.squeeze(0), actual)
+        err = (pred.squeeze(0) - actual) ** 2
+        loss_w = err.mean()
+        pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
+        pain_act = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
+        loss_w = loss_w + 0.5 * (pain_pred - pain_act) ** 2
         loss = loss_d + loss_w
         opt.zero_grad()
         loss.backward()
