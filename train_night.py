@@ -20,8 +20,8 @@ import math
 import random
 
 import torch
-import torch.nn.functional as F
 
+import dream
 import env
 from lora import DecisionLoRA, WorldLoRA
 
@@ -76,41 +76,16 @@ def main():
         for prm in (lora.A, lora.B):
             prm.requires_grad = False          # 睡眠期间不碰 LoRA（冻死在 0）
     opt = torch.optim.Adam(base_params, lr=args.lr)
+    scale = torch.tensor(env.OUT_SCALE, device=device)
     for step in range(args.replay):
-        t1 = (step * 7.3) % 360 - 180
-        t2 = (step * 3.1) % 180          # 覆盖到阻力区（160~180 真能挤进去）
-        # 规则目标（可达）
-        a1 = (step * 11.7) % 360 - 180
-        a2 = 20 + (step * 5.3) % 130
-        tx, ty = env.forward_kinematics(a1, a2)
-        obs = obs_tensor(t1, t2, (tx, ty), device)
-        d1, d2 = dec(obs)
-        # 决策：规则世界想象（价值——距离+痛(指数)——与预训练一致）
-        nt2 = env.step_theta2_t(t2, d2)   # 身体：160 之后是阻力，不是墙
-        ra1 = (t1 + d1) * math.pi / 180.0
-        ra2 = ra1 + nt2 * math.pi / 180.0
-        hx = torch.cos(ra1) + torch.cos(ra2)
-        hy = torch.sin(ra1) + torch.sin(ra2)
-        dist = torch.sqrt((hx - tx) ** 2 + (hy - ty) ** 2 + 1e-6)
-        pain = env.pain_t(nt2)            # 痛由实际到达的角度决定
-        v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
-        loss_d = -v.mean()
-        # 世界：规则监督
-        dr = torch.tensor([[rng.uniform(-1, 1), rng.uniform(-1, 1)]], device=device)
-        pred = world(obs, dr)
-        # 位置被身体挡住；痛/负载按"想去的角度"算（痛来自发力）
-        nt1, nt2, _w2, pain_a, load_a = env.step_body(
-            t1, t2, float(dr[0, 0]) * 60, float(dr[0, 1]) * 60)
-        nhx, nhy = env.forward_kinematics(nt1, nt2)
-        ohx, ohy = env.forward_kinematics(t1, t2)
-        raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=device)
-        scale = torch.tensor(env.OUT_SCALE, device=device)
-        actual = raw / scale
-        err = (pred.squeeze(0) - actual) ** 2
-        loss_w = err.mean()
-        pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
-        pain_act = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
-        loss_w = loss_w + 0.5 * (pain_pred - pain_act) ** 2
+        smp = dream.sample(rng)          # 和预训练同一套分布（见 dream.py）
+        if smp is None:
+            continue
+        t1, t2, target, d1r, d2r = smp
+        obs = obs_tensor(t1, t2, target, device)
+        loss_d, v = dream.decision_loss(dec, obs, t1, t2, target)
+        act = torch.tensor([[d1r / 60.0, d2r / 60.0]], device=device)
+        loss_w = dream.world_loss(world, obs, act, t1, t2, d1r, d2r, scale)
         loss = loss_d + loss_w
         opt.zero_grad()
         loss.backward()
@@ -131,6 +106,9 @@ def main():
             fails = json.load(f)
     except FileNotFoundError:
         fails = []
+    if args.fail_steps <= 0:          # --fail-steps 0 = 整个失败阶段都不做（含世界监督）
+        fails = []
+        print("[night] 跳过失败修正（--fail-steps 0）", flush=True)
     # 失败反思也改 base（夜里只动长期权重，LoRA 仍冻在 0）
     dec_base_params = (list(dec.base.parameters()) + list(dec.head_shoulder.parameters())
                        + list(dec.head_elbow.parameters()))

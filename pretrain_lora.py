@@ -10,12 +10,11 @@
   python pretrain_lora.py --device cuda --steps 10000
 """
 import argparse
-import math
 import random
 
 import torch
-import torch.nn.functional as F
 
+import dream
 import env
 from lora import DecisionLoRA, WorldLoRA
 from loop import obs_tensor
@@ -24,71 +23,26 @@ def pretrain(dec, world, device, steps, rng):
     """预训练 base：决策（规则世界想象）+ 世界（规则数据监督）。"""
     base_params = list(dec.base.parameters()) + list(dec.head_shoulder.parameters()) + list(dec.head_elbow.parameters())
     wbase_params = list(world.base.parameters()) + list(world.heads.parameters())
-    opt_d = torch.optim.Adam([p for p in base_params if p.requires_grad] if any(p.requires_grad for p in base_params) else [], lr=3e-4) if False else None
     # base 在预训练阶段需要可训练（临时解开）
     for p in base_params + wbase_params:
         p.requires_grad = True
     opt_d = torch.optim.Adam(base_params, lr=3e-4)
     opt_w = torch.optim.Adam(wbase_params, lr=3e-4)
+    scale = torch.tensor(env.OUT_SCALE, device=device)
     for step in range(steps):
-        t1 = rng.uniform(-180, 180)
-        t2 = rng.uniform(env.ELBOW_MIN, env.FOLD_MAX)   # 160~180 是"硬挤进去"的，也真能到
-        # 20% 到达 + 10% 接近（目标 = 手 + 小偏移——学小动作微调）
-        r0 = rng.random()
-        if r0 < 0.2:
-            hx0, hy0 = env.forward_kinematics(t1, t2)
-            target = (hx0, hy0)
-        elif r0 < 0.3:
-            hx0, hy0 = env.forward_kinematics(t1, t2)
-            ang = rng.uniform(0, 6.28)
-            r = rng.uniform(0.05, 0.2)
-            target = (hx0 + r * math.cos(ang), hy0 + r * math.sin(ang))
-        else:
-            target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
-        if env.inverse_kinematics(*target) is None:
+        smp = dream.sample(rng)          # 数据分布见 dream.py（夜间复习共用）
+        if smp is None:
             continue
+        t1, t2, target, d1r, d2r = smp
         obs = obs_tensor(t1, t2, target, device)
         # 决策：规则世界想象
-        d1, d2 = dec(obs)
-        nt2 = env.step_theta2_t(t2, d2)          # 身体：160 之后是阻力，不是墙
-        a1 = (t1 + d1) * math.pi / 180.0
-        a2 = a1 + nt2 * math.pi / 180.0
-        hx = torch.cos(a1) + torch.cos(a2)
-        hy = torch.sin(a1) + torch.sin(a2)
-        dist = torch.sqrt((hx - target[0]) ** 2 + (hy - target[1]) ** 2 + 1e-6)
-        pain = env.pain_t(nt2)                   # 痛由实际到达的角度决定
-        v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
-        loss_d = -v
+        loss_d, v = dream.decision_loss(dec, obs, t1, t2, target)
         opt_d.zero_grad()
         loss_d.backward()
         opt_d.step()
-        # 世界：规则数据监督（30% 精细动作——小动作学准）
-        if rng.random() < 0.3:
-            d1r = rng.uniform(-10, 10)
-            d2r = rng.uniform(-10, 10)
-        else:
-            d1r = rng.uniform(-60, 60)
-            d2r = rng.uniform(-60, 60)
+        # 世界：规则数据监督
         act = torch.tensor([[d1r / 60.0, d2r / 60.0]], device=device)
-        pred = world(obs, act)
-        # 位置被身体挡住；痛/负载按"想去的角度"算（痛来自发力）
-        nt1, nnt2, _want2w, pain_a, load_a = env.step_body(t1, t2, d1r, d2r)
-        nhx, nhy = env.forward_kinematics(nt1, nnt2)
-        ohx, ohy = env.forward_kinematics(t1, t2)
-        # 输出归一化（去量纲——每头各自尺度）
-        actual_raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=device)
-        scale = torch.tensor(env.OUT_SCALE, device=device)
-        actual = actual_raw / scale
-        # 位置项相对误差权重（小动作放大——重视小动作）；其他项线性
-        diff = pred.squeeze(0) - actual
-        w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2     # 小动作权重大
-        loss_pos = (diff[:2] ** 2 * w_pos).mean()
-        loss_other = (diff[2:] ** 2).mean()
-        loss_w = loss_pos + loss_other
-        # 痛项：指数差（pred/actual 的痛——归一化值 ×30 还原痛度）
-        pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
-        pain_act = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
-        loss_w = loss_w + 0.5 * (pain_pred - pain_act) ** 2
+        loss_w = dream.world_loss(world, obs, act, t1, t2, d1r, d2r, scale)
         opt_w.zero_grad()
         loss_w.backward()
         opt_w.step()
