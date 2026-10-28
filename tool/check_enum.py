@@ -48,9 +48,9 @@ for d1 in (-10, -5, -2, 0, 2, 5, 10):
         with torch.no_grad():
             pred = world(obs, act) * torch.tensor(env.OUT_SCALE, device=device)
         nhx, nhy = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-        pain = float(pred[0, 3])       # 负痛也算（缓解不该被夹掉）
+        pain = max(float(pred[0, 3]), 0.0)   # 物理上不可能为负（与 world_value 一致）
         vw = -math.hypot(nhx - target[0], nhy - target[1]) \
-             - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * float(pred[0, 4])
+             - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * max(float(pred[0, 4]), 0.0)
         nt1, nt2, want2, pain_a, load_a = env.step_body(t1, t2, d1, d2)
         ax, ay = env.forward_kinematics(nt1, nt2)
         va = (-math.hypot(ax - target[0], ay - target[1])

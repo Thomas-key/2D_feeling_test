@@ -54,9 +54,9 @@ for i in range(0, len(args.states), 2):
         pred = world(obs, act) * torch.tensor(env.OUT_SCALE, device=device)
     hx, hy = env.forward_kinematics(t1, t2)
     nhx, nhy = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-    pain = float(pred[0, 3])       # 负痛也算（缓解不该被夹掉）
+    pain = max(float(pred[0, 3]), 0.0)   # 物理上不可能为负（与 world_value 一致）
     v_world = -math.hypot(nhx - target[0], nhy - target[1]) \
-              - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * float(pred[0, 4])
+              - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * max(float(pred[0, 4]), 0.0)
     # 实际执行：位置被身体挡在 160，痛/负载按"想去的角度"算
     nt1, nt2, want2, pain_a, load_a = env.step_body(t1, t2, float(d1), float(d2))
     ax, ay = env.forward_kinematics(nt1, nt2)

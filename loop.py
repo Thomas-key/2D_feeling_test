@@ -54,13 +54,19 @@ def world_value(pred_n, hx, hy, target, scale):
     """世界模型预测的价值（run_task 与诊断脚本共用，保证口径一致）。
 
     pred_n：归一化预测；scale：OUT_SCALE。
-    痛：上界留（防 exp 爆），下界不夹——世界模型可以预测"负痛"（缓解）。
+
+    痛/负载都夹到 ≥0：物理上不存在负痛/负负载，而"预测负痛"会在价值里
+    凭空造出奖励——痛项是指数的，−0.2 的痛约等于 +0.1 的价值，是接受门槛
+    (0.01) 的十倍。实测后果：智能体在目标附近输出 (0,0) 不动，却因为
+    "预测自己能少痛一点"每帧都过门，一路刷分到停滞上限。
+    缓解仍然能表达：预测痛 < **当前真实痛** 即可（v_cur 用的是真值）。
     """
     pn = pred_n * scale
     nhx, nhy = hx + pn[0, 0], hy + pn[0, 1]
     dist = torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
-    pain = torch.clamp(pn[0, 3], max=env.PAIN_CAP)
-    return -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0) - 2.0 * pn[0, 4]
+    pain = torch.clamp(pn[0, 3], min=0.0, max=env.PAIN_CAP)
+    load = torch.clamp(pn[0, 4], min=0.0)
+    return -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0) - 2.0 * load
 
 
 def vstar(target):
