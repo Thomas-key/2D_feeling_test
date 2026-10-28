@@ -80,9 +80,12 @@ def pretrain(dec, world, device, steps, rng):
                                    env.load(nt1, nnt2, None)], device=device)
         scale = torch.tensor(env.OUT_SCALE, device=device)
         actual = actual_raw / scale
-        # 痛项用指数 loss（价值一致——痛非线性）；其他线性 MSE
-        err = (pred.squeeze(0) - actual) ** 2
-        loss_w = err.mean()
+        # 位置项相对误差权重（小动作放大——重视小动作）；其他项线性
+        diff = pred.squeeze(0) - actual
+        w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2     # 小动作权重大
+        loss_pos = (diff[:2] ** 2 * w_pos).mean()
+        loss_other = (diff[2:] ** 2).mean()
+        loss_w = loss_pos + loss_other
         # 痛项：指数差（pred/actual 的痛——归一化值 ×30 还原痛度）
         pain_pred = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
         pain_act = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
