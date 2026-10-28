@@ -85,8 +85,9 @@ def main():
     for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
             continue
-        t1 = rng.uniform(-180, 180)
-        t2 = rng.uniform(0, 180)
+        # 初始状态：排除极端（θ1 ±150 内、θ2 30-150——避免折叠/反向）
+        t1 = rng.uniform(-150, 150)
+        t2 = rng.uniform(30, 150)
         traj = []          # 本尝试轨迹（最后保存）
         hit = False
         dist = 9.0
