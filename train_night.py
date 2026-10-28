@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""train_night.py — 晚上（做梦）：LoRA 合并 + 回放 + 失败状态逼近 V* + LoRA 清空
+"""train_night.py — 晚上（睡眠巩固）：LoRA 合并进 base + 回放 + 失败状态逼近 V*
 
 流程：
-  1. 合并 LoRA 进 base（成功经验——睡眠巩固）
+  1. 合并 LoRA 进 base（成功经验——睡眠巩固），LoRA 归零
   2. 回放预训练数据（决策：规则想象；世界：规则监督——防遗忘）
-  3. LoRA 清空（新的一天）
-  4. 失败状态（failures.json）：从最后状态 → 想象 → 逼近 V*（决策+世界更新——防过拟合：少量）
+  3. 失败状态（failures.json）：从最后状态 → 想象 → 逼近 V*
+
+全程 LoRA 冻在 0：睡觉 = 大幅改长期权重（base），生活 = 小幅改 LoRA。
+所以这里优化器里只有 base/heads，不出现 A/B；存档里 LoRA 一定是空的。
 
 用法：
-  python train_night.py --device cuda --replay 500 --fail-steps 200
+  python train_night.py --device cuda --replay 2000 --fail-steps 4000
 """
 
 import argparse
@@ -47,7 +49,8 @@ def main():
     p.add_argument("--device", default="cuda")
     p.add_argument("--replay", type=int, default=2000)    # 复习预训练数据
     p.add_argument("--fail-steps", type=int, default=4000)  # 失败状态（200/状态）
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr", type=float, default=3e-4, help="回放（base 的学习率）")
+    p.add_argument("--fail-lr", type=float, default=1e-4, help="失败状态修正（base 的学习率）")
     args = p.parse_args()
     device = torch.device(args.device)
     rng = random.Random(0)
@@ -63,10 +66,16 @@ def main():
         lora.merge()
     print("[night] LoRA 合并进 base", flush=True)
 
-    # 2. 回放预训练数据（防遗忘——base 小 lr）
-    for prm in list(dec.base.parameters()) + list(world.base.parameters()):
+    # 2. 回放预训练数据（防遗忘——只动 base：睡觉=改长期权重）
+    base_params = (list(dec.base.parameters()) + list(dec.head_shoulder.parameters())
+                   + list(dec.head_elbow.parameters())
+                   + list(world.base.parameters()) + list(world.heads.parameters()))
+    for prm in base_params:
         prm.requires_grad = True
-    opt = torch.optim.Adam(list(dec.parameters()) + list(world.parameters()), lr=args.lr)
+    for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
+        for prm in (lora.A, lora.B):
+            prm.requires_grad = False          # 睡眠期间不碰 LoRA（冻死在 0）
+    opt = torch.optim.Adam(base_params, lr=args.lr)
     for step in range(args.replay):
         t1 = (step * 7.3) % 360 - 180
         t2 = 30 + (step * 3.1) % 120
@@ -109,12 +118,12 @@ def main():
         if (step + 1) % 200 == 0:
             print(f"[replay] {step+1} | 决策价值 {float(v):.3f} | 世界 mse {loss_w.item():.5f}", flush=True)
 
-    # 3. LoRA 清空（新的一天）
+    # 3. LoRA 保持清零（新的一天）——整晚没训练过它，这里再显式确认一次
     for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
         lora.reset()
     for prm in list(dec.base.parameters()) + list(world.base.parameters()):
         prm.requires_grad = False
-    print("[night] LoRA 清空", flush=True)
+    print("[night] LoRA 清零（睡眠期间不碰）", flush=True)
 
     # 4. 失败状态：从最后状态 → 想象 → 逼近 V*
     try:
@@ -122,14 +131,14 @@ def main():
             fails = json.load(f)
     except FileNotFoundError:
         fails = []
-    for prm in list(dec.loras().values()):
-        for pp in prm.parameters():
-            pp.requires_grad = True
-    opt_d = torch.optim.Adam([p for p in dec.parameters() if p.requires_grad], lr=1e-4)
-    # 世界 LoRA 也训练（失败状态监督）
-    for prm in world.loras_dict().parameters():
+    # 失败反思也改 base（夜里只动长期权重，LoRA 仍冻在 0）
+    dec_base_params = (list(dec.base.parameters()) + list(dec.head_shoulder.parameters())
+                       + list(dec.head_elbow.parameters()))
+    world_base_params = list(world.base.parameters()) + list(world.heads.parameters())
+    for prm in dec_base_params + world_base_params:
         prm.requires_grad = True
-    opt_w2 = torch.optim.Adam(world.loras_dict().parameters(), lr=1e-4)
+    opt_d = torch.optim.Adam(dec_base_params, lr=args.fail_lr)
+    opt_w2 = torch.optim.Adam(world_base_params, lr=args.fail_lr)
     for fi, fail in enumerate(fails[:20]):
         target = tuple(fail["target"])
         t1, t2 = fail["t1"], fail["t2"]
@@ -179,6 +188,9 @@ def main():
             opt_d.step()
         print(f"[fail {fi}] 目标 {target} V* {vstar:.3f} | 当前价值 {float(v):.3f}", flush=True)
 
+    # 存档前再确认一次：睡完 LoRA 必须是空的（否则 base 会带着夜里的小尾巴）
+    for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
+        lora.reset()
     torch.save({"dec_base": dec.base.state_dict(),
                 "dec_heads": {k: getattr(dec, k).state_dict()
                               for k in ("head_shoulder", "head_elbow")},

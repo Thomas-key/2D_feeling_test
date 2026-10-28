@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 import env
 from lora import DecisionLoRA, WorldLoRA
-from train_day import obs_tensor
+from loop import obs_tensor
 
 def pretrain(dec, world, device, steps, rng):
     """预训练 base：决策（规则世界想象）+ 世界（规则数据监督）。"""
