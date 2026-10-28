@@ -8,7 +8,7 @@
 感觉（数字）：
   - 本体：θ1, θ2（角度）、角速度
   - 触觉：手端到球的距离（接触时升高）
-  - 痛：角度超出安全范围的量（超范围 → 痛↑）
+  - 痛：想推到的角度超出身体范围的量（越推越痛；痛不累积，按动作算）
   - 负载：目标距离（远 → 负载高）
 动作：关节增量（档位，如 -15~+15 度/步，7 档）
 """
@@ -94,6 +94,35 @@ def load(theta1, theta2, ball=None):
     if ball is not None:
         ld = max(ld, touch(theta1, theta2, ball))
     return ld
+
+
+PAIN_CAP = 30.0     # 痛觉上限（生物上会饱和；也保证归一化后落在 [0,1]）
+
+
+def step_body(theta1, theta2, d1, d2):
+    """按动作推进一步：位置被身体挡住，感觉按"想去的角度"算。
+
+    位置：θ2 最多到 FOLD_LIMIT（160），再推也不动。
+    感觉：痛/负载由"想推到的角度"决定——顶住和痛来自发力，不来自到达。
+    痛不累积：每一步只看这一步推多狠，松手就不痛。
+
+    返回 (θ1', θ2', want2, pain, load)
+    """
+    want2 = theta2 + d2
+    nt1 = theta1 + d1
+    nt2 = min(FOLD_LIMIT, max(ELBOW_MIN, want2))
+    return nt1, nt2, want2, min(PAIN_CAP, pain(nt1, want2)), load(nt1, want2)
+
+
+def pain_t(want2):
+    """step_body 的可微版痛（与 pain() 同一公式 + PAIN_CAP 饱和）。
+
+    决策价值靠它把梯度传回动作——"预测掰到 180 会很痛"就是拿超限动作问它。
+    """
+    import torch
+    p = torch.relu(-want2) + torch.relu(want2 - ELBOW_MAX)
+    p = p + torch.relu(want2 - FOLD_PAIN) * 0.5
+    return torch.clamp(p, max=PAIN_CAP)
 
 
 def feeling_text(theta1, theta2, vel, ball, target):

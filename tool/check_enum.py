@@ -48,11 +48,13 @@ for d1 in (-10, -5, -2, 0, 2, 5, 10):
         with torch.no_grad():
             pred = world(obs, act) * torch.tensor(env.OUT_SCALE, device=device)
         nhx, nhy = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-        pain = max(float(pred[0, 3]), 0.0)
+        pain = float(pred[0, 3])       # 负痛也算（缓解不该被夹掉）
         vw = -math.hypot(nhx - target[0], nhy - target[1]) \
              - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * float(pred[0, 4])
-        nt1 = t1 + d1
-        nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2))
-        va = true_value(nt1, nt2)
+        nt1, nt2, want2, pain_a, load_a = env.step_body(t1, t2, d1, d2)
+        ax, ay = env.forward_kinematics(nt1, nt2)
+        va = (-math.hypot(ax - target[0], ay - target[1])
+              - 5.0 * (math.exp(min(pain_a, env.PAIN_CAP) / 10.0) - 1.0)
+              - 2.0 * load_a)
         mis = "误判!" if (vw <= v_cur + 0.01 and va > v_cur + 0.01) else ""
         print(f"({d1:>3},{d2:>3}) | {vw:>10.3f} | {va:>8.3f} | {mis:>8}")

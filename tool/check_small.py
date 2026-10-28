@@ -33,6 +33,7 @@ for d1, d2 in [(5, 0), (-5, 0), (10, 0), (-10, 0), (20, 10), (30, 0), (60, 0), (
     with torch.no_grad():
         pred = world(obs, act) * torch.tensor(env.OUT_SCALE, device=device)
     px, py = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-    ax, ay = env.forward_kinematics(t1 + d1, min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2)))
+    nt1, nt2, _w2, _pa, _la = env.step_body(t1, t2, d1, d2)
+    ax, ay = env.forward_kinematics(nt1, nt2)
     err = math.hypot(px - ax, py - ay)
     print(f"({d1:>3},{d2:>3}) | ({px:>6.2f},{py:>6.2f}) | ({ax:>6.2f},{ay:>6.2f}) | {err:>5.3f}")

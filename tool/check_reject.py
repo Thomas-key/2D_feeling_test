@@ -54,13 +54,15 @@ for i in range(0, len(args.states), 2):
         pred = world(obs, act) * torch.tensor(env.OUT_SCALE, device=device)
     hx, hy = env.forward_kinematics(t1, t2)
     nhx, nhy = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-    pain = max(float(pred[0, 3]), 0.0)
+    pain = float(pred[0, 3])       # 负痛也算（缓解不该被夹掉）
     v_world = -math.hypot(nhx - target[0], nhy - target[1]) \
               - 5.0 * (math.exp(min(pain, 30.0) / 10.0) - 1.0) - 2.0 * float(pred[0, 4])
-    # 实际执行
-    nt1 = t1 + float(d1)
-    nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))
-    v_actual = true_value(nt1, nt2)
+    # 实际执行：位置被身体挡在 160，痛/负载按"想去的角度"算
+    nt1, nt2, want2, pain_a, load_a = env.step_body(t1, t2, float(d1), float(d2))
+    ax, ay = env.forward_kinematics(nt1, nt2)
+    v_actual = (-math.hypot(ax - target[0], ay - target[1])
+                - 5.0 * (math.exp(min(pain_a, env.PAIN_CAP) / 10.0) - 1.0)
+                - 2.0 * load_a)
     verdict = "误拒!" if (v_world <= v_cur + 0.01 and v_actual > v_cur + 0.01) else "正常"
     print(f"({t1:>4},{t2:>4}) | ({hx:>5.2f},{hy:>5.2f}) | {v_cur:>7.3f} | "
           f"({float(d1):>5.1f},{float(d2):>4.1f}) | {v_world:>7.3f} | {v_actual:>12.3f} | {verdict:>8}")

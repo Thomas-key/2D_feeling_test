@@ -85,25 +85,26 @@ def main():
         tx, ty = env.forward_kinematics(a1, a2)
         obs = obs_tensor(t1, t2, (tx, ty), device)
         d1, d2 = dec(obs)
-        # 决策：规则世界想象（价值——距离+痛(指数)+负载——与预训练一致）
+        # 决策：规则世界想象（价值——距离+痛(指数)——与预训练一致）
+        want2 = t2 + d2
+        t2n = torch.clamp(want2, env.ELBOW_MIN, env.FOLD_LIMIT)   # 身体：最多到 160
         ra1 = (t1 + d1) * math.pi / 180.0
-        ra2 = (t1 + d1 + (t2 + d2)) * math.pi / 180.0
+        ra2 = ra1 + t2n * math.pi / 180.0
         hx = torch.cos(ra1) + torch.cos(ra2)
         hy = torch.sin(ra1) + torch.sin(ra2)
         dist = torch.sqrt((hx - tx) ** 2 + (hy - ty) ** 2 + 1e-6)
-        nt2 = torch.clamp(t2 + d2, env.ELBOW_MIN, env.FOLD_LIMIT)
-        pain = torch.relu(nt2 - env.FOLD_PAIN) * 0.5
+        pain = env.pain_t(want2)        # 感觉：按"想去的角度"算（越推越痛）
         v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
         loss_d = -v.mean()
         # 世界：规则监督
         dr = torch.tensor([[rng.uniform(-1, 1), rng.uniform(-1, 1)]], device=device)
         pred = world(obs, dr)
-        nt1 = t1 + float(dr[0, 0]) * 60
-        nt2 = min(env.ELBOW_MAX, max(env.ELBOW_MIN, t2 + float(dr[0, 1]) * 60))
+        # 位置被身体挡住；痛/负载按"想去的角度"算（痛来自发力）
+        nt1, nt2, _w2, pain_a, load_a = env.step_body(
+            t1, t2, float(dr[0, 0]) * 60, float(dr[0, 1]) * 60)
         nhx, nhy = env.forward_kinematics(nt1, nt2)
         ohx, ohy = env.forward_kinematics(t1, t2)
-        raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2),
-                            env.load(nt1, nt2, None)], device=device)
+        raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=device)
         scale = torch.tensor(env.OUT_SCALE, device=device)
         actual = raw / scale
         err = (pred.squeeze(0) - actual) ** 2
@@ -153,12 +154,10 @@ def main():
             obs = obs_tensor(t1, t2, target, device)
             act = torch.tensor([[d1 / 60.0, d2 / 60.0]], device=device)
             pred = world(obs, act)
-            nt1 = t1 + d1
-            nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2))
+            nt1, nt2, _w2, pain_a, load_a = env.step_body(t1, t2, d1, d2)
             nhx, nhy = env.forward_kinematics(nt1, nt2)
             ohx, ohy = env.forward_kinematics(t1, t2)
-            raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2),
-                                env.load(nt1, nt2, None)], device=device)
+            raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=device)
             scale = torch.tensor(env.OUT_SCALE, device=device)
             actual = raw / scale
             diff = pred.squeeze(0) - actual
@@ -174,13 +173,14 @@ def main():
         for step in range(args.fail_steps // max(1, len(fails[:20])) or 1):
             obs = obs_tensor(t1, t2, target, device)
             d1, d2 = dec(obs)
+            want2 = t2 + d2
+            t2n = torch.clamp(want2, env.ELBOW_MIN, env.FOLD_LIMIT)   # 身体：最多到 160
             a1 = (t1 + d1) * math.pi / 180.0
-            a2 = (t1 + d1 + (t2 + d2)) * math.pi / 180.0
+            a2 = a1 + t2n * math.pi / 180.0
             hx = torch.cos(a1) + torch.cos(a2)
             hy = torch.sin(a1) + torch.sin(a2)
             dist = torch.sqrt((hx - target[0]) ** 2 + (hy - target[1]) ** 2 + 1e-6)
-            nt2 = torch.clamp(t2 + d2, env.ELBOW_MIN, env.ELBOW_MAX)
-            pain = torch.relu(nt2 - env.FOLD_PAIN) * 0.5
+            pain = env.pain_t(want2)    # 感觉：按"想去的角度"算
             v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
             loss = -v
             opt_d.zero_grad()

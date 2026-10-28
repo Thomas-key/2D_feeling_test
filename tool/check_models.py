@@ -69,7 +69,8 @@ def main():
         scale = _t.tensor(env.OUT_SCALE, device=pred.device)
         pred = pred * scale
         px, py = hx + float(pred[0, 0]), hy + float(pred[0, 1])
-        ax, ay = env.forward_kinematics(t1 + d1, min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2)))
+        nt1, nt2, _w2, _pa, _la = env.step_body(t1, t2, d1, d2)
+        ax, ay = env.forward_kinematics(nt1, nt2)
         err = math.hypot(px - ax, py - ay)
         print(f"({t1:>3},{t2:>3}) | ({d1:>3},{d2:>3}) | ({px:>5.2f},{py:>5.2f}) | "
               f"({ax:>5.2f},{ay:>5.2f}) | {err:>5.2f}")
@@ -82,9 +83,9 @@ def main():
         act = torch.tensor([[0.0, d2 / 60.0]], dtype=torch.float32, device=device)
         with torch.no_grad():
             pred = world(obs, act)
-        nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2c + d2))
+        nt1, nt2, want2, pain_a, load_a = env.step_body(0.0, t2c, 0.0, d2)
         print(f"θ2=100 + 动作 {d2}° → 预测痛 {float(pred[0, 3]) * 30:>5.1f} | "
-              f"实际θ2={nt2:.0f} 痛 {env.pain(0, nt2):>4.1f} | 实际负载 {env.load(0, nt2):.2f}")
+              f"实际 θ2={nt2:.0f}（想推 {want2:.0f}）痛 {pain_a:>4.1f} | 负载 {load_a:.2f}")
 
 
 if __name__ == "__main__":

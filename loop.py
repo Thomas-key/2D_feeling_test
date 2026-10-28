@@ -25,7 +25,6 @@ import env
 
 HIT_DIST = 0.1      # 到达判定（米）
 ACCEPT_EPS = 0.01   # 价值至少提升这么多才执行（平手不走）
-MAX_PAIN = 30.0     # v_new 里的痛上限（防 exp 爆）
 
 
 def obs_tensor(t1, t2, target, device):
@@ -34,11 +33,15 @@ def obs_tensor(t1, t2, target, device):
 
 
 def true_value(t1, t2, target):
-    """真实价值（环境真值，不是世界模型预测）。"""
+    """真实价值（环境真值，不是世界模型预测）。
+
+    痛是瞬时的（只在下一次发力时出现），所以停在某个状态时痛 = env.pain(当前角度)，
+    身体范围内恒为 0——和"痛不累积"一致。
+    """
     hx, hy = env.forward_kinematics(t1, t2)
     dist = math.hypot(hx - target[0], hy - target[1])
     p = env.pain(t1, t2)
-    return -dist - 5.0 * (math.exp(min(p, MAX_PAIN) / 10.0) - 1.0) - 2.0 * env.load(t1, t2, None)
+    return -dist - 5.0 * (math.exp(min(p, env.PAIN_CAP) / 10.0) - 1.0) - 2.0 * env.load(t1, t2, None)
 
 
 def vstar(target):
@@ -56,12 +59,15 @@ def state_row(step, t1, t2, target):
             "dist": round(math.hypot(hx - target[0], hy - target[1]), 2)}
 
 
-def _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, scale):
-    """执行后用真实结果监督世界模型（门控：只学预测得离谱的地方）。返回是否更新了。"""
+def _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, pain_a, load_a, scale):
+    """执行后用真实结果监督世界模型（门控：只学预测得离谱的地方）。返回是否更新了。
+
+    位置：被身体挡住后的角度（t1,t2）。
+    感觉：env.step_body 按"想去的角度"算出来的痛/负载（痛来自发力，不来自到达）。
+    """
     nhx, nhy = env.forward_kinematics(t1, t2)
     ohx, ohy = env.forward_kinematics(o1, o2)
-    raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0,
-                        env.pain(t1, t2), env.load(t1, t2, None)], device=scale.device)
+    raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, pain_a, load_a], device=scale.device)
     actual = raw / scale
     err = (pred.squeeze(0) - actual).abs()
     if float(err[:2].max()) <= 0.1 and float(err[3]) <= 0.1:
@@ -142,15 +148,17 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
             pn = pred * scale                                   # 反归一化
             nhx, nhy = hx + pn[0, 0], hy + pn[0, 1]
             dist_t = torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
-            pain_t = torch.clamp(pn[0, 3], 0.0, MAX_PAIN)
+            # 痛：上界留（防 exp 爆），下界去掉——世界模型可以预测"负痛"（缓解）
+            pain_t = torch.clamp(pn[0, 3], max=env.PAIN_CAP)
             v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pn[0, 4]
 
             if float(v_new) > v_cur + ACCEPT_EPS:
                 o1, o2 = t1, t2
-                t1 = t1 + float(d1)
-                t2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))  # 折叠 160 挡
+                # 位置被身体挡住（θ2 最多 160），痛/负载按"想去的角度"算
+                t1, t2, _want2, pain_a, load_a = env.step_body(t1, t2, float(d1), float(d2))
                 if not eval_only:
-                    if _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2, scale):
+                    if _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2,
+                                     pain_a, load_a, scale):
                         wm_up += 1
                 ok = True
                 if verbose:
