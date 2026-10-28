@@ -132,6 +132,9 @@ def main():
             pain_t = torch.clamp(pn[0, 3], 0.0, 30.0)
             v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pn[0, 4]
             v_cur = true_value(t1, t2, target)
+            if step < 10:
+                print(f"[step {step}] dec_up {dec_up} | v_new {float(v_new):.3f} "
+                      f"| v_cur {v_cur:.3f} | dist {dist:.2f}", flush=True)
             if v_new > v_cur + 0.01:
                 # 通过 → 执行 → 世界更新（eval-only 跳过更新）
                 if args.eval_only:
@@ -166,7 +169,6 @@ def main():
                 loss_d.backward()
                 opt_d.step()
                 dec_up += 1
-        print(f"[step {step}] dec_up {dec_up} | wm_up {wm_up} | dist {dist:.2f}", flush=True)
         reachable = vstar(target) > -0.1     # 可达（容忍 0.1——V* > -0.1）
         results.append({"target": list(target), "reachable": reachable,
                         "hit": bool(hit), "dist": round(dist, 3)})
