@@ -62,8 +62,8 @@ def decision_loss(dec, obs, t1, t2, target):
     return -v.mean(), v
 
 
-def world_loss(world, obs, act, t1, t2, d1r, d2r, scale):
-    """世界：规则数据监督（位置相对加权 + 痛项指数差）。"""
+def world_losses(world, obs, act, t1, t2, d1r, d2r, scale):
+    """世界：规则数据监督。返回 (总损失, 位置项, 痛项)——后两项给监控用。"""
     import torch
     pred = world(obs, act)
     nt1, nt2, _want2, pain_a, load_a = env.step_body(t1, t2, d1r, d2r)
@@ -73,5 +73,11 @@ def world_loss(world, obs, act, t1, t2, d1r, d2r, scale):
                           device=scale.device) / scale
     diff = pred.squeeze(0) - actual
     w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2      # 小动作权重大
-    loss = (diff[:2] ** 2 * w_pos).mean() + (diff[2:] ** 2).mean()
-    return loss + env.pain_loss_t(pred[0, 3] * scale[3], actual[3] * scale[3])
+    loss_pos = (diff[:2] ** 2 * w_pos).mean() + (diff[2:] ** 2).mean()
+    loss_pain = env.pain_loss_t(pred[0, 3] * scale[3], actual[3] * scale[3])
+    return loss_pos + loss_pain, loss_pos, loss_pain
+
+
+def world_loss(world, obs, act, t1, t2, d1r, d2r, scale):
+    """世界损失（训练用，只要总数）。"""
+    return world_losses(world, obs, act, t1, t2, d1r, d2r, scale)[0]
