@@ -46,7 +46,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", default="cuda")
     p.add_argument("--replay", type=int, default=2000)    # 复习预训练数据
-    p.add_argument("--fail-steps", type=int, default=1000)  # 失败状态想象（防过拟合）
+    p.add_argument("--fail-steps", type=int, default=4000)  # 失败状态（200/状态）
     p.add_argument("--lr", type=float, default=3e-4)
     args = p.parse_args()
     device = torch.device(args.device)
@@ -126,10 +126,42 @@ def main():
         for pp in prm.parameters():
             pp.requires_grad = True
     opt_d = torch.optim.Adam([p for p in dec.parameters() if p.requires_grad], lr=1e-4)
+    # 世界 LoRA 也训练（失败状态监督）
+    for prm in world.loras_dict().parameters():
+        prm.requires_grad = True
+    opt_w2 = torch.optim.Adam(world.loras_dict().parameters(), lr=1e-4)
     for fi, fail in enumerate(fails[:20]):
         target = tuple(fail["target"])
         t1, t2 = fail["t1"], fail["t2"]
         vstar = fail["vstar"]
+        # 世界：失败状态 + 批量动作（±2~60）→ 规则 → 监督
+        acts = []
+        for d in (2, 5, 10, 30, 60):
+            for sgn in (-1, 1):
+                acts.append((sgn * d, 0))
+                acts.append((0, sgn * d))
+        for d1, d2 in acts:
+            obs = obs_tensor(t1, t2, target, device)
+            act = torch.tensor([[d1 / 60.0, d2 / 60.0]], device=device)
+            pred = world(obs, act)
+            nt1 = t1 + d1
+            nt2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + d2))
+            nhx, nhy = env.forward_kinematics(nt1, nt2)
+            ohx, ohy = env.forward_kinematics(t1, t2)
+            raw = torch.tensor([nhx - ohx, nhy - ohy, 0.0, env.pain(nt1, nt2),
+                                env.load(nt1, nt2, None)], device=device)
+            scale = torch.tensor(env.OUT_SCALE, device=device)
+            actual = raw / scale
+            diff = pred.squeeze(0) - actual
+            w_pos = 1.0 / (actual[:2].abs() + 0.05) ** 2
+            loss_w = (diff[:2] ** 2 * w_pos).mean() + (diff[2:] ** 2).mean()
+            pp = torch.exp(torch.clamp(pred[0, 3] * 30.0, -30.0, 60.0) / 10.0)
+            pa = torch.exp(torch.clamp(actual[3] * 30.0, -30.0, 60.0) / 10.0)
+            loss_w = loss_w + 0.5 * (pp - pa) ** 2
+            opt_w2.zero_grad()
+            loss_w.backward()
+            opt_w2.step()
+        # 决策：失败状态单步最大价值（200/状态）
         for step in range(args.fail_steps // max(1, len(fails[:20])) or 1):
             obs = obs_tensor(t1, t2, target, device)
             d1, d2 = dec(obs)
@@ -150,8 +182,11 @@ def main():
     torch.save({"dec_base": dec.base.state_dict(),
                 "dec_heads": {k: getattr(dec, k).state_dict()
                               for k in ("head_shoulder", "head_elbow")},
+                "dec_lora": {k: v.state_dict() for k, v in dec.loras().items()},
                 "world_base": world.base.state_dict(),
-                "world_heads": world.heads.state_dict()}, "night_base.pt")
+                "world_heads": world.heads.state_dict(),
+                "world_lora": {k: v.state_dict() for k, v in world.loras_dict().items()}},
+               "night_base.pt")
     print("[save] night_base.pt（合并+回放+失败修正后的 base）", flush=True)
 
 
