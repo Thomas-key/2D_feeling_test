@@ -53,6 +53,8 @@ def main():
     p.add_argument("--attempts", type=int, default=1, help="每个任务尝试次数")
     p.add_argument("--eval-only", action="store_true", help="只评估（不训练/不更新）")
     p.add_argument("--base", default="pretrain_base.pt", help="加载的 base（睡后评估用 night_base.pt）")
+    p.add_argument("--t1", type=float, default=30.0, help="初始 θ1（默认 30——像 closed_loop）")
+    p.add_argument("--t2", type=float, default=90.0, help="初始 θ2（默认 90）")
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)   # LoRA（base 冻结——可大）
     p.add_argument("--seed", type=int, default=0)
@@ -104,9 +106,8 @@ def main():
     for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
             continue
-        # 初始状态：排除极端（θ1 ±150 内、θ2 30-150——避免折叠/反向）
-        t1 = rng.uniform(-150, 150)
-        t2 = rng.uniform(30, 150)
+        t1 = args.t1
+        t2 = args.t2
         traj = []          # 本尝试轨迹（最后保存）
         hit = False
         dist = 9.0
