@@ -71,6 +71,8 @@ def main():
     failures = []
     successes = 0
     results = []      # 每任务：target/可达/成功（完成度对比用）
+    dec_up = 0        # 决策更新次数
+    wm_up = 0         # 世界更新次数
     # 任务列表（--target 单任务 / --tasks 随机多任务）
     tasks = []
     if args.target is not None:
@@ -135,12 +137,14 @@ def main():
                     opt_w.zero_grad()
                     loss_w.backward()
                     opt_w.step()
+                    wm_up += 1
             else:
                 # 拒绝 → 决策更新（LoRA）
                 loss_d = -v_new
                 opt_d.zero_grad()
                 loss_d.backward()
                 opt_d.step()
+                dec_up += 1
         reachable = vstar(target) > -0.1     # 可达（容忍 0.1——V* > -0.1）
         results.append({"target": list(target), "reachable": reachable,
                         "hit": bool(hit), "dist": round(dist, 3)})
@@ -151,7 +155,8 @@ def main():
                              "t1": round(t1, 1), "t2": round(t2, 1),
                              "dist": round(dist, 2), "vstar": round(vstar(target), 3)})
         if (task + 1) % 10 == 0:
-            print(f"[day] task {task+1} | 成功 {successes} | 失败 {len(failures)}", flush=True)
+            print(f"[day] task {task+1} | 成功 {successes} | 失败 {len(failures)} | "
+                  f"决策更新 {dec_up} | 世界更新 {wm_up}", flush=True)
 
     # 3. 保存（成功 LoRA / 失败记录）
     torch.save({"dec_base": dec.base.state_dict(),
