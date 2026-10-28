@@ -88,15 +88,15 @@ def main():
             d1, d2 = dec(obs)
             act = torch.cat([d1, d2], dim=-1) / 60.0
             pred = world(obs, act)
-            # 反归一化
+            # 反归一化（torch——保留梯度，供决策更新）
             scale = torch.tensor(env.OUT_SCALE, device=device)
             pn = pred * scale
-            nhx = hx + float(pn[0, 0])
-            nhy = hy + float(pn[0, 1])
-            pain_n = float(pn[0, 3])
-            v_new = -math.hypot(nhx - target[0], nhy - target[1]) \
-                    - 5.0 * (math.exp(min(max(pain_n, 0.0), 30.0) / 10.0) - 1.0) \
-                    - 2.0 * float(pn[0, 4])
+            nhx = hx + pn[0, 0]
+            nhy = hy + pn[0, 1]
+            pain_n = torch.clamp(pn[0, 3], 0.0, 30.0)
+            v_new = (-torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
+                     - 5.0 * (torch.exp(pain_n / 10.0) - 1.0)
+                     - 2.0 * pn[0, 4])
             if v_new > v_cur + 0.01:
                 o1, o2 = t1, t2
                 t1 = t1 + float(d1)
