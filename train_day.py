@@ -41,6 +41,8 @@ def main():
     p.add_argument("--max-retries", type=int, default=50, help="同一个状态最多试几次")
     p.add_argument("--per-task-reset", action="store_true",
                    help="每个任务开始前把 LoRA 清零（每个任务都从 base 重新适应）")
+    p.add_argument("--keep-world", action="store_true",
+                   help="配合 --per-task-reset：**不**重置世界 LoRA（身体图式跨任务累积）")
     p.add_argument("--stall-limit", type=int, default=15,
                    help="连续多少步没刷新最近距离就停（100=不让它停）")
     p.add_argument("--lr", type=float, default=1e-4, help="决策 LoRA 学习率")
@@ -88,8 +90,11 @@ def main():
         if env.inverse_kinematics(*target) is None:
             continue
         if args.per_task_reset:      # 每个任务都从同一份 base 重新适应
-            for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
+            for lora in dec.loras().values():
                 lora.reset_trainable()   # 注意不是 reset()：全零会让梯度恒为零
+            if not args.keep_world:
+                for lora in world.loras_dict().values():
+                    lora.reset_trainable()
             opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
             opt_w = torch.optim.Adam(world_lora_params, lr=args.world_lr)
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
