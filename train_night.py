@@ -45,8 +45,8 @@ def load_day(dec, world, path="lora_day.pt"):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", default="cuda")
-    p.add_argument("--replay", type=int, default=500)     # 复习预训练数据
-    p.add_argument("--fail-steps", type=int, default=200) # 失败状态想象（防过拟合）
+    p.add_argument("--replay", type=int, default=2000)    # 复习预训练数据
+    p.add_argument("--fail-steps", type=int, default=1000)  # 失败状态想象（防过拟合）
     p.add_argument("--lr", type=float, default=3e-4)
     args = p.parse_args()
     device = torch.device(args.device)
@@ -107,7 +107,7 @@ def main():
         loss.backward()
         opt.step()
         if (step + 1) % 200 == 0:
-            print(f"[replay] {step+1} | 决策距离 {loss_d.item():.3f} | 世界 mse {loss_w.item():.5f}", flush=True)
+            print(f"[replay] {step+1} | 决策价值 {float(v):.3f} | 世界 mse {loss_w.item():.5f}", flush=True)
 
     # 3. LoRA 清空（新的一天）
     for lora in list(dec.loras().values()) + list(world.loras_dict().values()):
