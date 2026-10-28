@@ -76,13 +76,16 @@ def main():
         tx, ty = env.forward_kinematics(a1, a2)
         obs = obs_tensor(t1, t2, (tx, ty), device)
         d1, d2 = dec(obs)
-        # 决策：规则世界想象
+        # 决策：规则世界想象（价值——距离+痛(指数)+负载——与预训练一致）
         ra1 = (t1 + d1) * math.pi / 180.0
         ra2 = (t1 + d1 + (t2 + d2)) * math.pi / 180.0
         hx = torch.cos(ra1) + torch.cos(ra2)
         hy = torch.sin(ra1) + torch.sin(ra2)
         dist = torch.sqrt((hx - tx) ** 2 + (hy - ty) ** 2 + 1e-6)
-        loss_d = dist.mean()
+        nt2 = torch.clamp(t2 + d2, env.ELBOW_MIN, env.FOLD_LIMIT)
+        pain = torch.relu(nt2 - env.FOLD_PAIN) * 0.5
+        v = -dist - 5.0 * (torch.exp(pain / 10.0) - 1.0)
+        loss_d = -v.mean()
         # 世界：规则监督
         dr = torch.tensor([[rng.uniform(-1, 1), rng.uniform(-1, 1)]], device=device)
         pred = world(obs, dr)
