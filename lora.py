@@ -91,7 +91,7 @@ class WorldLoRA(torch.nn.Module):
         })
 
     def forward(self, obs, action):
-        h = self.base(obs) + 3.0 * self.act_proj(action)   # 动作放大嵌入
+        h = self.base(obs) + self.act_proj(action)   # 动作嵌入（归一化——不放大）
         return torch.cat([self.loras[k](h) for k in self.heads], dim=-1)
 
     def loras_dict(self):
