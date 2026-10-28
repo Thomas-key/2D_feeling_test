@@ -10,7 +10,11 @@
 
 步的定义（两边一致）：
   step  = 一次"被接受的移动"
-  retry = 同一个状态上最多试几次（拒绝 → 更新决策 → 原地再试，不占 step 预算）
+  retry = 同一个状态上最多试几次（不安全的丢掉，安全的记下，过线的立刻执行）
+
+每一步一定会动（除非所有候选都不安全）：试满 max_retries 次仍没有"价值过线"的动作时，
+执行安全候选里价值最高的那一个。这是为了对付"目标附近预测误差 > 真实改善"的情况——
+以前会原地不动、磨到上限然后失败（实测失败任务里 12/14 是"一步就能到"）。
 
 价值：
   V_new = -dist' - 5·(exp(pain'/10) - 1) - 2·load'
@@ -25,6 +29,8 @@ import env
 
 HIT_DIST = 0.1      # 到达判定（米）
 ACCEPT_EPS = 0.01   # 价值至少提升这么多才执行（平手不走）
+SAFE_PAIN = 1.0     # 安全门：预测痛允许比当前多这么多
+SAFE_LOAD = 0.5     # 安全门：预测负载允许比当前多这么多
 
 
 def obs_tensor(t1, t2, target, device):
@@ -116,10 +122,22 @@ def load_base(dec, world, path, dec_lora=False, world_lora=True):
 
 
 def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
-             max_steps=100, max_retries=300, eval_only=False, verbose=False):
+             max_steps=100, max_retries=50, stall_limit=15,
+             eval_only=False, verbose=False):
     """跑一个任务（从 (t1,t2) 出发）。
 
-    eval_only=True：权重全冻结——拒绝不更新、直接放弃这一步（只是评估策略，不学习）。
+    每一步的重试规则：
+      1. 决策给动作 → 世界模型预测价值；
+      2. **安全门**：预测痛/负载显著超过当前 → 不安全，丢掉；
+      3. 安全的动作里，有超过 v_cur + 0.01 的 → 立刻执行（早退出，少更新决策）；
+      4. 试满 max_retries 次都没有过线的 → **执行安全候选里价值最高的那个**（保证前进）；
+      5. 一个安全的都没有 → 才真的放弃。
+
+    为什么要有第 4 条：以前"不过线就原地不动"，于是目标附近只要世界模型的预测
+    偏差压过真实改善（噪声 0.1 > 信号 0.03），就只能反复重试到上限然后失败——
+    实测 14 个失败里 12 个"一步就能到"。它失败不是因为不会走，是不肯迈第一步。
+
+    eval_only=True：权重全冻结（不更新决策/世界），但第 4 条同样生效。
 
     返回：
       hit      是否到达（dist < HIT_DIST）
@@ -129,7 +147,7 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
       t1,t2    最终关节角（度）
       dist     最终距离
       steps    被接受的移动次数
-      gave_up  是否因为"一个状态试满 max_retries 次还不通过"而放弃
+      gave_up  是否因为"一个安全的动作都没有"而放弃
     """
     device = next(dec.parameters()).device
     scale = torch.tensor(env.OUT_SCALE, device=device)
@@ -138,7 +156,9 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
     steps = 0
     hit = gave_up = False
     dist = traj[0]["dist"]
-    v_new = v_cur = 0.0
+    v_cur = 0.0
+    best_dist = dist       # 已见的最好距离（停滞检测用）
+    since_improve = 0
 
     for step in range(max_steps):
         hx, hy = env.forward_kinematics(t1, t2)
@@ -147,8 +167,12 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
             hit = True
             break
         v_cur = true_value(t1, t2, target)
+        cur_pain = env.pain(t1, t2)
+        cur_load = env.load(t1, t2, None)
         obs = obs_tensor(t1, t2, target, device)   # 重试期间状态不变 → 只算一次
-        ok = False
+
+        best = None      # 安全候选里价值最高的：(v, d1, d2)
+        chosen = None    # 要执行的动作：(d1, d2, v, retry)
         tries = 0
         for retry in range(max_retries):
             tries = retry + 1
@@ -156,40 +180,68 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
             act = torch.cat([d1, d2], dim=-1) / 60.0
             pred = world(obs, act)
             v_new = world_value(pred, hx, hy, target, scale)
-
-            if float(v_new) > v_cur + ACCEPT_EPS:
-                o1, o2 = t1, t2
-                # 身体：160 之后是阻力（推 1° 只挤进去 0.25°），痛由结果角度决定
-                t1, t2, _want2, pain_a, load_a = env.step_body(t1, t2, float(d1), float(d2))
-                if not eval_only:
-                    if _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2,
-                                     pain_a, load_a, scale):
-                        wm_up += 1
-                ok = True
-                if verbose:
-                    print(f"[step {step}] 重试 {retry} | v_new {float(v_new):.3f} | "
-                          f"v_cur {v_cur:.3f} | dist {dist:.2f}", flush=True)
-                break
-
+            pn = pred * scale
+            # 安全门：不能显著更痛/更吃力（距离变差不拦——下一步能纠）
+            safe = (float(pn[0, 3]) <= cur_pain + SAFE_PAIN
+                    and float(pn[0, 4]) <= cur_load + SAFE_LOAD)
+            if safe:
+                if best is None or float(v_new) > best[0]:
+                    best = (float(v_new), float(d1), float(d2))
+                if float(v_new) > v_cur + ACCEPT_EPS:      # 过线：立刻执行
+                    chosen = (float(d1), float(d2), float(v_new), retry)
+                    break
             if eval_only:          # 冻结时不更新 → 原地再试也没意义
                 break
-
             loss_d = -v_new        # 拒绝 → 决策往上抬
             opt_d.zero_grad()
             loss_d.backward()
             opt_d.step()
             dec_up += 1
 
-        if not ok:
-            gave_up = True
+        if chosen is None:
+            if best is None:       # 试了这么多次，一个安全的动作都没有 → 真的放弃
+                gave_up = True
+                if verbose:
+                    print(f"[step {step}] {tries} 次尝试全不安全 → 放弃 | "
+                          f"v_cur {v_cur:.3f} | dist {dist:.2f}", flush=True)
+                break
+            # 没有动作过线，但至少有一个安全的 → 执行其中价值最高的，保证前进
+            chosen = (best[1], best[2], best[0], tries - 1)
             if verbose:
-                print(f"[step {step}] 重试 {tries} 次仍不通过 → 放弃 | "
-                      f"v_new {float(v_new):.3f} | v_cur {v_cur:.3f} | "
-                      f"dist {dist:.2f}", flush=True)
-            break
+                print(f"[step {step}] 无动作过线 | 执行最优安全动作 v {best[0]:.3f} | "
+                      f"v_cur {v_cur:.3f} | dist {dist:.2f} | 重试 {chosen[3]}", flush=True)
+        elif verbose:
+            print(f"[step {step}] 过线 | v_new {chosen[2]:.3f} | v_cur {v_cur:.3f} | "
+                  f"dist {dist:.2f} | 重试 {chosen[3]}", flush=True)
+
+        # 执行选中的动作
+        d1, d2 = chosen[0], chosen[1]
+        o1, o2 = t1, t2
+        t1, t2, _want2, pain_a, load_a = env.step_body(t1, t2, d1, d2)
+        if not eval_only:
+            act = torch.tensor([[d1 / 60.0, d2 / 60.0]], device=device)
+            with torch.no_grad():
+                pred = world(obs, act)
+            if _world_update(world, opt_w, obs, act, pred, o1, o2, t1, t2,
+                             pain_a, load_a, scale):
+                wm_up += 1
 
         steps = step + 1
         traj.append(state_row(steps, t1, t2, target))
+
+        nhx, nhy = env.forward_kinematics(t1, t2)
+        ndist = math.hypot(nhx - target[0], nhy - target[1])
+        if ndist < best_dist - 1e-6:      # 真的更近了
+            best_dist = ndist
+            since_improve = 0
+        else:
+            since_improve += 1
+            if since_improve >= stall_limit:   # 原地打转 → 停
+                gave_up = True
+                if verbose:
+                    print(f"[step {step}] 连续 {since_improve} 步没有更接近"
+                          f"（{ndist:.2f} 米）→ 停止", flush=True)
+                break
 
     # 最终距离按现在的 (t1,t2) 重算（循环跑满时 dist 还停在最后一次移动之前）
     hx, hy = env.forward_kinematics(t1, t2)

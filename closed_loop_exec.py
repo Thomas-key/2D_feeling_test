@@ -28,7 +28,7 @@ def main():
     p.add_argument("--t1", type=float, default=30.0)
     p.add_argument("--t2", type=float, default=90.0)
     p.add_argument("--steps", type=int, default=100, help="最多接受多少次移动")
-    p.add_argument("--retries", type=int, default=300, help="同一个状态最多试几次")
+    p.add_argument("--retries", type=int, default=50, help="同一个状态最多试几次")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--base", default="pretrain_base.pt")
     p.add_argument("--best-decision", default="decision_best.pt")
