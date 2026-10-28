@@ -147,7 +147,7 @@ def main():
                                     env.pain(t1, t2), env.load(t1, t2, None)], device=device)
                 actual = raw / scale
                 err = (pred.squeeze(0) - actual).abs()
-                if float(err[:2].max()) > 0.1 or float(err[3]) > 1.0:
+                if float(err[:2].max()) > 0.1 or float(err[3]) > 0.1:   # 像 closed_loop
                     pred2 = world(obs, act.detach())
                     # 线性 MSE（位置/负载/触感）+ 痛项指数（价值一致）
                     err = (pred2.squeeze(0) - actual) ** 2
