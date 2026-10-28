@@ -33,10 +33,16 @@ def pretrain(dec, world, device, steps, rng):
     for step in range(steps):
         t1 = rng.uniform(-180, 180)
         t2 = rng.uniform(0, 180)
-        # 20% 到达样本（目标 = 当前手位置——决策学“不动”）
-        if rng.random() < 0.2:
+        # 20% 到达 + 10% 接近（目标 = 手 + 小偏移——学小动作微调）
+        r0 = rng.random()
+        if r0 < 0.2:
             hx0, hy0 = env.forward_kinematics(t1, t2)
             target = (hx0, hy0)
+        elif r0 < 0.3:
+            hx0, hy0 = env.forward_kinematics(t1, t2)
+            ang = rng.uniform(0, 6.28)
+            r = rng.uniform(0.05, 0.2)
+            target = (hx0 + r * math.cos(ang), hy0 + r * math.sin(ang))
         else:
             target = (rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
         if env.inverse_kinematics(*target) is None:
@@ -56,9 +62,13 @@ def pretrain(dec, world, device, steps, rng):
         opt_d.zero_grad()
         loss_d.backward()
         opt_d.step()
-        # 世界：规则数据监督
-        d1r = rng.uniform(-60, 60)
-        d2r = rng.uniform(-60, 60)
+        # 世界：规则数据监督（30% 精细动作——小动作学准）
+        if rng.random() < 0.3:
+            d1r = rng.uniform(-10, 10)
+            d2r = rng.uniform(-10, 10)
+        else:
+            d1r = rng.uniform(-60, 60)
+            d2r = rng.uniform(-60, 60)
         act = torch.tensor([[d1r / 60.0, d2r / 60.0]], device=device)
         pred = world(obs, act)
         nt1 = t1 + d1r
