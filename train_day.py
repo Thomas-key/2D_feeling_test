@@ -123,10 +123,13 @@ def main():
             d1, d2 = dec(obs)
             act = torch.cat([d1, d2], dim=-1) / 60.0   # (1,2) 保留梯度
             pred = world(obs, act)
-            nhx, nhy = hx + pred[0, 0], hy + pred[0, 1]          # torch（保留梯度）
+            # 反归一化（pred 归一化 → 实际量纲）
+            scale = torch.tensor(env.OUT_SCALE, device=device)
+            pn = pred * scale
+            nhx, nhy = hx + pn[0, 0], hy + pn[0, 1]          # torch（保留梯度）
             dist_t = torch.sqrt((nhx - target[0]) ** 2 + (nhy - target[1]) ** 2 + 1e-6)
-            pain_t = torch.clamp(pred[0, 3] * 30.0, 0.0, 30.0)
-            v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pred[0, 4]
+            pain_t = torch.clamp(pn[0, 3], 0.0, 30.0)
+            v_new = -dist_t - 5.0 * (torch.exp(pain_t / 10.0) - 1.0) - 2.0 * pn[0, 4]
             v_cur = true_value(t1, t2, target)
             if v_new > v_cur + 0.01:
                 # 通过 → 执行 → 世界更新（eval-only 跳过更新）
@@ -139,9 +142,9 @@ def main():
                 t2 = min(env.FOLD_LIMIT, max(env.ELBOW_MIN, t2 + float(d2)))   # 折叠 160 挡
                 nhx2, nhy2 = env.forward_kinematics(t1, t2)
                 ohx, ohy = env.forward_kinematics(o1, o2)
-                actual = torch.tensor([nhx2 - ohx, nhy2 - ohy, 0.0,
-                                       env.pain(t1, t2) / 30.0,
-                                       env.load(t1, t2, None)], device=device)
+                raw = torch.tensor([nhx2 - ohx, nhy2 - ohy, 0.0,
+                                    env.pain(t1, t2), env.load(t1, t2, None)], device=device)
+                actual = raw / scale
                 err = (pred.squeeze(0) - actual).abs()
                 if float(err[:2].max()) > 0.1 or float(err[3]) > 1.0:
                     pred2 = world(obs, act.detach())
