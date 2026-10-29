@@ -6,7 +6,7 @@
 差别只在"跑几个任务、输出什么"，不在循环逻辑本身。
 
 用法：
-  python closed_loop_exec.py --target -1.0 -1.0 --device cuda
+  python tool/closed_loop_exec.py --target -1.0 -1.0 --device cuda
 """
 
 import argparse
@@ -16,7 +16,7 @@ import sys
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lora import DecisionLoRA, WorldLoRA      # noqa: E402
 from loop import load_base, run_task          # noqa: E402  （加载 base 也只有这一份）
 
