@@ -135,7 +135,12 @@ def main():
     p.add_argument("--samples", type=int, default=2000)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--ckpts", nargs="+", default=["pretrain_base.pt"])
+    p.add_argument("--body", nargs="*", default=[],
+                   help="按改过的身体来量（真值也跟着变）：key=value，可多个")
     args = p.parse_args()
+    env.parse_body_args(args.body)
+    if env.body_change():
+        print(f"[body] 世界变了：{env.body_change()}（真值按新身体算）")
     device = torch.device(args.device)
     samples = make_samples(args.samples, args.seed)
     pain_n = sum(1 for t1, t2, _tg, d1, d2 in samples

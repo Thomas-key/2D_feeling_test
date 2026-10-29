@@ -122,8 +122,15 @@ def main():
                         "实验时指到 runs/xxx.pt，别让每次跑都覆盖 lora_day.pt")
     p.add_argument("--no-save", action="store_true",
                    help="不写权重（评估已有适配器时用，防止把要评估的东西覆盖掉）")
+    p.add_argument("--body", nargs="*", default=[],
+                   help="让**世界变了**：key=value，可给多个。可选 d1_bias / d2_bias / "
+                        "fold_start / fold_yield / pain_start（例：--body d2_bias=3）")
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
     args = p.parse_args()
+
+    env.parse_body_args(args.body)      # 世界在这里变；预训练永远用默认值
+    if env.body_change():
+        print(f"[body] 世界变了：{env.body_change()}", flush=True)
 
     if args.commit_on_success and args.per_task_reset:
         p.error("--commit-on-success 和 --per-task-reset 是两种相反的策略："
@@ -272,6 +279,7 @@ def main():
                    "commit_dec_only": args.commit_dec_only,
                    "load_dec_lora": args.load_dec_lora,
                    "oracle_teacher": args.oracle_teacher,
+                   "body": env.body_change(),
                    "results": results},
                   f, ensure_ascii=False)
     if last is not None:

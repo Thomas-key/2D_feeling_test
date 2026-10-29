@@ -96,6 +96,18 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 
 `tasks/seed1.json` 是 `--seed 1 --draws 100` 抽出来的 87 个任务，数量和 README 里那批一致（但历史那次没存任务列表，无法保证逐点相同）。三份种子集都是 i.i.d. 抽取（同分布）：seed1 87 个、seed2 90 个、seed3 90 个；彼此最接近的点对约 2 cm（1~5 对在 5 cm 内），**不是严格不重叠**——所以统计时要靠配对，不要靠"任务一定没见过"。
 
+世界可以变（测"能不能调整"，见 [DESIGN 第十一节](DESIGN.md)）：
+
+```bash
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --body d2_bias=3 --out runs/s1_body.json --ckpt-out runs/s1_body.pt
+python tool/check_world.py --device cuda --body d2_bias=3 \
+    --ckpts pretrain_base.pt runs/s1_body.pt
+```
+
+`--body` 可给多个：`d1_bias` / `d2_bias` / `fold_start` / `fold_yield` / `pain_start`。
+**预训练永远用默认值**——先在世界 A 里学会，才谈"世界变成 B 以后能不能调回来"。
+
 ## 工具（`tool/`）
 
 | 工具 | 用途 |

@@ -57,7 +57,12 @@ def main():
     p.add_argument("--lr", type=float, default=3e-5,
                    help="回放（微调级学习率——预训练的 3e-4 用来微调收敛后的 base 会把它擦掉）")
     p.add_argument("--fail-lr", type=float, default=1e-4, help="失败状态修正（base 的学习率）")
+    p.add_argument("--body", nargs="*", default=[],
+                   help="睡着时的身体（要和白天一致）：key=value，可多个，见 train_day")
     args = p.parse_args()
+    env.parse_body_args(args.body)
+    if env.body_change():
+        print(f"[body] 世界变了：{env.body_change()}", flush=True)
     device = torch.device(args.device)
     rng = random.Random(0)
 

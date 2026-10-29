@@ -56,6 +56,50 @@ FOLD_LIMIT = 160.0  # 折叠阻力点：之后每推 1° 只挤进去 FOLD_YIELD
 FOLD_MAX = 180.0    # 绝对上限：到这儿再推也不动
 FOLD_YIELD = 0.25   # 阻力系数（0.25 = 要费约 4 倍的劲）
 
+_DEFAULT_BODY = {
+    "d1_bias": 0.0,        # 肩每步实际多转这么多度（校准偏差）
+    "d2_bias": 0.0,        # 肘每步实际多转这么多度
+    "fold_start": FOLD_LIMIT,   # 折叠阻力从几度开始
+    "fold_yield": FOLD_YIELD,   # 阻力系数
+    "pain_start": FOLD_PAIN,    # 痛从几度开始
+}
+# 可变的"身体"：默认等于上面的常量。`--body k=v` 可在运行时改。
+# 目的：让"世界变了"成为一个**可注入的实验变量**，而不是改代码。
+# 注意：预训练永远用默认值——变了之后才能测"能不能调回来"。
+BODY = dict(_DEFAULT_BODY)
+
+
+def set_body(**kw):
+    """运行时改动身体。未知的键直接报错（别让拼错的参数静悄悄无效）。"""
+    for k, v in kw.items():
+        if k not in BODY:
+            raise KeyError(f"未知的身体参数 {k}；可选：{sorted(BODY)}")
+        BODY[k] = float(v)
+    return dict(BODY)
+
+
+def body_change():
+    """和默认值不同的项（全默认返回空 dict）。"""
+    return {k: v for k, v in BODY.items() if abs(v - _DEFAULT_BODY[k]) > 1e-12}
+
+
+def parse_body_args(pairs):
+    """把 ["d2_bias=3"] 解析成 {"d2_bias": 3.0} 并应用到 BODY。"""
+    out = {}
+    for s in pairs or []:
+        if "=" not in s:
+            raise SystemExit(f"--body 要写成 key=value，收到 {s!r}")
+        k, v = s.split("=", 1)
+        out[k.strip()] = float(v)
+    if out:
+        set_body(**out)
+    return out
+
+
+def _act(d1, d2):
+    """把"命令的动作"换成"身体实际做的动作"（校准偏差在这里注入）。"""
+    return d1 + BODY["d1_bias"], d2 + BODY["d2_bias"]
+
 
 def pain(theta1, theta2):
     """痛：肘角超出物理范围 [0,180] + 折叠（>160）挤压痛。"""
@@ -64,8 +108,8 @@ def pain(theta1, theta2):
         p += ELBOW_MIN - theta2
     elif theta2 > ELBOW_MAX:
         p += theta2 - ELBOW_MAX
-    if theta2 > FOLD_PAIN:
-        p += (theta2 - FOLD_PAIN) * 0.5     # 折叠挤压（160→180 逐渐痛）
+    if theta2 > BODY["pain_start"]:
+        p += (theta2 - BODY["pain_start"]) * 0.5   # 折叠挤压（越挤越痛）
     return p
 
 
@@ -91,8 +135,8 @@ def touch(theta1, theta2, ball):
 def load(theta1, theta2, ball=None):
     """肌肉负载：碰球（受阻）+ 折叠（θ2>160 挤压）时高。"""
     ld = 0.0
-    if theta2 > FOLD_PAIN:
-        ld = min(1.0, (theta2 - FOLD_PAIN) / 20.0)   # 折叠负载 0→1
+    if theta2 > BODY["pain_start"]:
+        ld = min(1.0, (theta2 - BODY["pain_start"]) / 20.0)   # 折叠负载 0→1
     if ball is not None:
         ld = max(ld, touch(theta1, theta2, ball))
     return ld
@@ -108,13 +152,14 @@ def fold_target(theta2, d2):
     一直可以挤到 FOLD_MAX。所以推得越狠折得越深，也就越痛（且能一直更痛）。
     0° 一侧仍是硬夹。
     """
+    fold, yield_ = BODY["fold_start"], BODY["fold_yield"]
     want2 = theta2 + d2
-    if want2 <= FOLD_LIMIT:
+    if want2 <= fold:
         return max(ELBOW_MIN, want2)                     # 自由区
-    if theta2 >= FOLD_LIMIT:                             # 已在阻力区：整个动作打折
-        nt2 = theta2 + d2 * FOLD_YIELD
+    if theta2 >= fold:                                   # 已在阻力区：整个动作打折
+        nt2 = theta2 + d2 * yield_
     else:                                                # 从自由区越界：只有超出部分打折
-        nt2 = FOLD_LIMIT + (want2 - FOLD_LIMIT) * FOLD_YIELD
+        nt2 = fold + (want2 - fold) * yield_
     return min(FOLD_MAX, nt2)
 
 
@@ -124,6 +169,7 @@ def step_body(theta1, theta2, d1, d2):
     返回 (θ1', θ2', want2, pain, load)
       want2 只是"想推到的角度"（诊断用）；痛/负载都按实际到达的 θ2' 算。
     """
+    d1, d2 = _act(d1, d2)          # 身体不是完全听命令的（校准偏差）
     nt1 = theta1 + d1
     nt2 = fold_target(theta2, d2)
     return nt1, nt2, theta2 + d2, min(PAIN_CAP, pain(nt1, nt2)), load(nt1, nt2)
@@ -132,13 +178,13 @@ def step_body(theta1, theta2, d1, d2):
 def step_theta2_t(theta2, d2):
     """fold_target 的可微版（决策价值里"想象"用），分支与它逐条对应。"""
     import torch
+    d2 = d2 + BODY["d2_bias"]                 # 与 step_body 里的 _act 一致
+    fold, yield_ = BODY["fold_start"], BODY["fold_yield"]
     want2 = theta2 + d2
-    if theta2 >= FOLD_LIMIT:
-        nt2 = torch.where(want2 <= FOLD_LIMIT, want2,
-                          theta2 + d2 * FOLD_YIELD)
+    if theta2 >= fold:
+        nt2 = torch.where(want2 <= fold, want2, theta2 + d2 * yield_)
     else:
-        nt2 = torch.where(want2 <= FOLD_LIMIT, want2,
-                          FOLD_LIMIT + (want2 - FOLD_LIMIT) * FOLD_YIELD)
+        nt2 = torch.where(want2 <= fold, want2, fold + (want2 - fold) * yield_)
     return torch.clamp(nt2, min=ELBOW_MIN, max=FOLD_MAX)
 
 
@@ -146,7 +192,7 @@ def pain_t(theta2):
     """可微版痛（与 pain() 同一公式 + PAIN_CAP 饱和），吃**实际到达**的角度。"""
     import torch
     p = torch.relu(-theta2) + torch.relu(theta2 - ELBOW_MAX)
-    p = p + torch.relu(theta2 - FOLD_PAIN) * 0.5
+    p = p + torch.relu(theta2 - BODY["pain_start"]) * 0.5
     return torch.clamp(p, max=PAIN_CAP)
 
 
@@ -255,8 +301,8 @@ def grid_sensation(theta1, theta2, ball=None):
     painv = [0.0] * N_GRID
     p = pain(theta1, theta2) / 30.0
     # 折叠：越过阻力点（160）小臂才真正被压住 → 触觉/负载（与痛边界一致）
-    if theta2 > FOLD_LIMIT:
-        fold = min(1.0, (theta2 - FOLD_LIMIT) / 20.0)
+    if theta2 > BODY["fold_start"]:
+        fold = min(1.0, (theta2 - BODY["fold_start"]) / 20.0)
         for i in range(8, 16):
             touch[i] = fold
             loadv[i] = fold
