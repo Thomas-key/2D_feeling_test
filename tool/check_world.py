@@ -8,12 +8,14 @@
   实测：一天累积的世界 LoRA 与不训练在 180 个任务上逐位相同（0 胜 0 负）。
   所以"世界有没有变准"必须单独量。
 
-这里量四件事（同一批样本，所有检查点共用）：
+量四件事（同一批样本，所有检查点共用 → 可以做配对）：
   位置误差     预测手位置 vs 真实手位置（米）
   痛误差       预测痛 vs 真实痛（分）
   价值误差     |预测 V' - 真实 V'|——验证门真正比较的是这个
-  误判率       预测的"这一步值得走吗"与真值判断不一致的比例
-               （就是价值判定翻转的比例；它才决定智能体会不会走错）
+  判定翻转     预测"这步值得走吗"与真值结论不一致的比例（决定会不会走错）
+
+⚠️ 配对很重要：同一批样本上，一个检查点的误差降了 0.004 到底算不算数，
+   要看不一致方向（更好/更差多少个样本），而不是只看均值。
 
 用法：
   python tool/check_world.py --device cuda --samples 2000 ^
@@ -54,18 +56,15 @@ def value_of(hx, hy, target, pain, load):
 
 
 def evaluate(path, samples, device):
+    """返回逐样本误差列表（配对比较要用）。"""
     dec = DecisionLoRA().to(device)
     world = WorldLoRA().to(device)
     load_base(dec, world, path, dec_lora=False, world_lora=True)   # 世界 LoRA 一起加载
     world.eval()
     scale = torch.tensor(env.OUT_SCALE, device=device)
 
-    e_pos = e_pain = e_load = e_val = 0.0
-    e_pain_zone = 0.0
-    pain_zone_n = 0
-    bad = 0                        # 价值判定翻转次数
-    false_ok = 0                   # 真值说"不值"，预测说"值"（危险方向）
-    n = len(samples)
+    pos_e, pain_e, load_e, val_e, flip = [], [], [], [], []
+    false_ok = 0
     with torch.no_grad():
         for t1, t2, target, d1r, d2r in samples:
             obs = torch.tensor(env.obs_vector(t1, t2, target), dtype=torch.float32,
@@ -81,27 +80,53 @@ def evaluate(path, samples, device):
             l_pred = max(float(pred[4]), 0.0)
             phx, phy = ohx + float(pred[0]), ohy + float(pred[1])
 
-            e_pos += math.hypot(phx - nhx, phy - nhy)
-            e_pain += abs(p_pred - pain_a)
-            e_load += abs(l_pred - load_a)
-            if pain_a > 0:
-                pain_zone_n += 1
-                e_pain_zone += abs(p_pred - pain_a)
+            pos_e.append(math.hypot(phx - nhx, phy - nhy))
+            pain_e.append(abs(p_pred - pain_a))
+            load_e.append(abs(l_pred - load_a))
 
             v_cur = true_value(t1, t2, target)
             v_pred = value_of(phx, phy, target, p_pred, l_pred)
             v_true = value_of(nhx, nhy, target, pain_a, load_a)
-            e_val += abs(v_pred - v_true)
+            val_e.append(abs(v_pred - v_true))
             ok_pred = v_pred > v_cur + ACCEPT_EPS
             ok_true = v_true > v_cur + ACCEPT_EPS
-            if ok_pred != ok_true:
-                bad += 1
-                if ok_pred and not ok_true:
-                    false_ok += 1
-    return {"n": n, "pos": e_pos / n, "pain": e_pain / n, "load": e_load / n,
-            "value": e_val / n, "bad": bad, "false_ok": false_ok,
-            "pain_zone_n": pain_zone_n,
-            "pain_zone": e_pain_zone / max(1, pain_zone_n)}
+            flip.append(1 if ok_pred != ok_true else 0)
+            if ok_pred and not ok_true:
+                false_ok += 1
+    return {"pos": pos_e, "pain": pain_e, "load": load_e, "value": val_e,
+            "flip": flip, "false_ok": false_ok}
+
+
+def mean(xs):
+    return sum(xs) / max(1, len(xs))
+
+
+def sign_p(better, worse):
+    """双尾精确符号检验。大样本走对数空间——2000 个样本时 2**n 早就溢出了。"""
+    n = better + worse
+    if n == 0:
+        return 1.0
+    k = min(better, worse)
+    if n <= 200:
+        return min(1.0, 2.0 * sum(math.comb(n, i) for i in range(k + 1)) / (2 ** n))
+    lg = math.lgamma
+    tail = 0.0
+    for i in range(k + 1):
+        tail += math.exp(lg(n + 1) - lg(i + 1) - lg(n - i + 1) - n * math.log(2.0))
+    return min(1.0, 2.0 * tail)
+
+
+def paired(base, other, key):
+    """逐样本配对：均值差、标准误、更好/更差多少个、符号检验 p。"""
+    a, b = base[key], other[key]
+    d = [y - x for x, y in zip(a, b)]
+    n = len(d)
+    m = mean(d)
+    var = sum((x - m) ** 2 for x in d) / max(1, n - 1)
+    se = math.sqrt(var / n)
+    better = sum(1 for x in d if x < -1e-12)
+    worse = sum(1 for x in d if x > 1e-12)
+    return m, se, better, worse, sign_p(better, worse)
 
 
 def main():
@@ -118,28 +143,47 @@ def main():
     print(f"样本 {len(samples)} 个（dream.sample，seed {args.seed}）；"
           f"其中真值会痛（痛 > 0）的 {pain_n} 个")
     print()
-    print(f"{'检查点':<26}{'位置(m)':>9}{'痛(分)':>8}{'负载':>7}{'价值':>8}"
-          f"{'判定翻转':>10}{'误接':>7}")
+    print(f"{'检查点':<24}{'位置(m)':>9}{'痛(分)':>8}{'负载':>7}{'价值':>8}"
+          f"{'判定翻转':>9}{'误接':>7}")
+
+    results = []
     base = None
     for path in args.ckpts:
         if not os.path.exists(path):
-            print(f"{path:<26}  (不存在)")
+            print(f"{path:<24}  (不存在)")
             continue
         r = evaluate(path, samples, device)
-        tag = os.path.basename(path)[:25]
-        print(f"{tag:<26}{r['pos']:>9.4f}{r['pain']:>8.2f}{r['load']:>7.3f}"
-              f"{r['value']:>8.4f}{r['bad']/r['n']:>9.1%}{r['false_ok']:>7}")
+        n = len(r["pos"])
+        tag = os.path.basename(path)[:23]
+        fl = sum(r["flip"]) / n
+        print(f"{tag:<24}{mean(r['pos']):>9.4f}{mean(r['pain']):>8.2f}"
+              f"{mean(r['load']):>7.3f}{mean(r['value']):>8.4f}"
+              f"{fl:>8.1%}{r['false_ok']:>7}")
         if base is None:
             base = r
         else:
-            print(f"{'  ↑ 相对第一个':<26}{r['pos']-base['pos']:>+9.4f}"
-                  f"{r['pain']-base['pain']:>+8.2f}{r['load']-base['load']:>+7.3f}"
-                  f"{r['value']-base['value']:>+8.4f}"
-                  f"{(r['bad']-base['bad'])/r['n']:>+9.1%}{r['false_ok']-base['false_ok']:>+7d}")
+            print(f"  {'':<22}{'配对变化（更好/更差，符号检验）':<40}")
+            for key, name, unit in (("pos", "位置", "m"), ("value", "价值", ""),
+                                    ("pain", "痛", "分"), ("load", "负载", "")):
+                m, se, better, worse, pv = paired(base, r, key)
+                print(f"  {name:<6} {m:+.4f}{unit} ± {se:.4f}  "
+                      f"更好 {better} / 更差 {worse}   p={pv:.3f}")
+            fb = sum(base["flip"])
+            fo = sum(r["flip"])
+            # 判定翻转是 0/1，用配对 McNemar
+            only_o = sum(1 for x, y in zip(base["flip"], r["flip"]) if y and not x)
+            only_b = sum(1 for x, y in zip(base["flip"], r["flip"]) if x and not y)
+            print(f"  {'翻转':<6} {fo/n:.1%} vs {fb/n:.1%}  "
+                  f"变好 {only_b} / 变坏 {only_o}   p={sign_p(only_o, only_b):.3f}")
+        results.append(r)
+
     print()
-    print("判定翻转 = 预测说'这步值得走'与真值结论不一致的比例（决定智能体会不会走错）")
-    print("误接     = 真值说不值得、预测说值得的次数（危险方向）")
-    print("世界 LoRA 只影响这几项；冻结任务的完成度几乎不受它影响，别用完成度评价世界模型。")
+    print("怎么读：均值差要跟标准误一起看（差 < 2×SE 基本是噪声）；")
+    print("        '更好/更差'个数才是配对的意义——各一半就是没变。")
+    print("判定翻转 = 预测说'这步值得走'与真值结论不一致的比例；误接 = 危险方向。")
+    print()
+    print("⚠️ 探针分布是 dream.sample（整个状态空间）。白天的更新只发生在")
+    print("   '从 (30°,90°) 出发、朝任务目标走'的窄走廊里，全局平均会把局部学习稀释掉。")
 
 
 if __name__ == "__main__":
