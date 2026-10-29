@@ -13,15 +13,25 @@
   痛误差       预测痛 vs 真实痛（分）
   价值误差     |预测 V' - 真实 V'|——验证门真正比较的是这个
   判定翻转     预测"这步值得走吗"与真值结论不一致的比例（决定会不会走错）
-  偏差残留     世界模型把身体偏差学掉了多少（见下）
+  偏差吸收     世界模型把身体偏差学掉了多少（见下）
 
-为什么单独要"偏差残留"：
+为什么单独要"偏差吸收"：
   用 --body 让身体变一点（比如 d2_bias=3 → 手每步多走 0.05 米）时，
   这个偏差会被模型原有的 0.21 米随机误差完全盖住（RMS 只从 0.2123 变到 0.2185），
-  看误差大小根本看不出来。但偏差是**系统性**的：把它投影到偏差方向上，
-  2000 个样本的标准误只有 0.0045 米，0.05 米的偏差是 11 个标准误。
-  偏差残留 = 1 → 一点没学到；= 0 → 完全学会了。
-  这才是"自我校准"该看的量（校准是消除系统偏差，不是减小随机误差）。
+  看误差大小根本看不出来。但偏差是**系统性**的：投影到偏差方向上，
+  随机部分会互相抵消，2000 个样本的标准误只有 0.0045 米——0.05 米是 10 个标准误。
+
+  算法（最小二乘投影，**比值之和**，不是逐样本比值平均）：
+      δ = 真实走到 - "身体完全听话"会走到       （身体偏差造成的位移）
+      e = 模型预测 - "身体完全听话"会走到       （模型的偏离）
+      α = Σ(e·δ) / Σ|δ|²
+  偏差吸收 = α：0 = 一点没学到；1 = 完全学会（连偏差一起预测对了）。
+
+  ⚠️ 两种读法都要小心：
+    (a) 逐样本比值 mean(-proj/|δ|) 会在 |δ| 很小时爆掉（折叠区只剩 0.75°），
+        重尾均值不可靠——所以这里用比值之和；
+    (b) α≠0 不一定来自"学习"。模型本来就可能偏在一个方向上，恰好和这次扰动同向。
+        判断"学没学"要看**两个检查点之间的配对变化**，不要看单个 α。
 
 ⚠️ 配对很重要：同一批样本上，一个检查点的误差降了 0.004 到底算不算数，
    要看不一致方向（更好/更差多少个样本），而不是只看均值。
@@ -73,7 +83,9 @@ def evaluate(path, samples, device):
     scale = torch.tensor(env.OUT_SCALE, device=device)
 
     pos_e, pain_e, load_e, val_e, flip = [], [], [], [], []
-    bias_r, bias_mag = [], 0.0        # 偏差残留（逐样本）+ 平均偏差大小
+    # 偏差残留：逐样本存 e·δ 和 |δ|²，最后用**比值之和**（不是逐样本比值平均）。
+    # 逐样本比值在 |δ| 很小的时候会爆掉（折叠区里 3° 只剩 0.75°），重尾均值不可靠。
+    bias_num, bias_den = [], []
     false_ok = 0
     with torch.no_grad():
         for t1, t2, target, d1r, d2r in samples:
@@ -98,10 +110,11 @@ def evaluate(path, samples, device):
                                               env.fold_target(t2, float(d2r)))
             bx, by = nhx - chx, nhy - chy
             bmag = math.hypot(bx, by)
-            if bmag > 1e-3:                      # 偏差太小（比如折叠已经饱和）就跳过
-                proj = ((phx - nhx) * bx + (phy - nhy) * by) / bmag
-                bias_r.append(-proj / bmag)      # 1=完全没学 0=完全学会
-                bias_mag += bmag
+            if bmag > 5e-3:                      # 偏差太小（折叠饱和等）跳过
+                # 模型预测相对"完全听话"的偏离 e = pred - cmd，投影到偏差方向
+                ex, ey = (phx - chx), (phy - chy)
+                bias_num.append(ex * bx + ey * by)
+                bias_den.append(bmag * bmag)
 
             pain_e.append(abs(p_pred - pain_a))
             load_e.append(abs(l_pred - load_a))
@@ -115,9 +128,12 @@ def evaluate(path, samples, device):
             flip.append(1 if ok_pred != ok_true else 0)
             if ok_pred and not ok_true:
                 false_ok += 1
+    den = sum(bias_den)
+    alpha = (sum(bias_num) / den) if den > 0 else None     # 吸收比例
     return {"pos": pos_e, "pain": pain_e, "load": load_e, "value": val_e,
             "flip": flip, "false_ok": false_ok,
-            "bias": bias_r, "bias_mag": bias_mag / max(1, len(bias_r))}
+            "bias_num": bias_num, "bias_den": bias_den, "alpha": alpha,
+            "bias_mag": (math.sqrt(den / len(bias_den)) if bias_den else 0.0)}
 
 
 def mean(xs):
@@ -172,7 +188,7 @@ def main():
           f"其中真值会痛（痛 > 0）的 {pain_n} 个")
     print()
     print(f"{'检查点':<24}{'位置(m)':>9}{'痛(分)':>8}{'负载':>7}{'价值':>8}"
-          f"{'判定翻转':>9}{'误接':>7}{'偏差残留':>10}")
+          f"{'判定翻转':>9}{'误接':>7}{'偏差吸收':>10}")
 
     results = []
     base = None
@@ -184,7 +200,7 @@ def main():
         n = len(r["pos"])
         tag = os.path.basename(path)[:23]
         fl = sum(r["flip"]) / n
-        sr = f"{mean(r['bias']):>9.0%}" if r["bias"] else f"{'—':>9}"
+        sr = f"{r['alpha']:>9.0%}" if r["alpha"] is not None else f"{'—':>9}"
         print(f"{tag:<24}{mean(r['pos']):>9.4f}{mean(r['pain']):>8.2f}"
               f"{mean(r['load']):>7.3f}{mean(r['value']):>8.4f}"
               f"{fl:>8.1%}{r['false_ok']:>7}{sr:>10}")
@@ -197,11 +213,19 @@ def main():
                 m, se, better, worse, pv = paired(base, r, key)
                 print(f"  {name:<6} {m:+.4f}{unit} ± {se:.4f}  "
                       f"更好 {better} / 更差 {worse}   p={pv:.3f}")
-            if r["bias"] and base["bias"]:
-                mb, se_b, bb, wb, pb = paired(base, r, "bias")
-                print(f"  {'偏差残留':<6} {mb:+.3f} ± {se_b:.3f}  "
-                      f"更好 {bb} / 更差 {wb}   p={pb:.3f}"
-                      f"   （身体偏差平均 {r['bias_mag']:.3f} 米）")
+            if r["alpha"] is not None and base["alpha"] is not None:
+                nb, nk = base["bias_num"], r["bias_num"]
+                den = sum(r["bias_den"])
+                diff = [a - b for a, b in zip(nk, nb)]
+                m = mean(diff)
+                sd = math.sqrt(sum((x - m) ** 2 for x in diff) / max(1, len(diff) - 1))
+                dalpha = m * len(diff) / den
+                dse = sd / math.sqrt(len(diff)) * len(diff) / den
+                up = sum(1 for x in diff if x > 0)
+                dn = sum(1 for x in diff if x < 0)
+                print(f"  {'偏差吸收':<6} {base['alpha']:.0%} → {r['alpha']:.0%}"
+                      f"（{dalpha:+.0%} ± {dse:.0%}）  吸收变多 {up} / 变少 {dn}"
+                      f"   p={sign_p(up, dn):.3f}   （身体偏差 {r['bias_mag']:.3f} 米）")
             fb = sum(base["flip"])
             fo = sum(r["flip"])
             # 判定翻转是 0/1，用配对 McNemar
