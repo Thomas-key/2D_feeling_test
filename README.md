@@ -55,6 +55,10 @@ python pretrain_lora.py --device cuda --steps 10000
 
 # ② 生活（白天）——对比实验必须用 --tasks-file，--out 分开存
 python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1.json
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --commit-on-success --out runs/s1_commit.json               # 只保留成功任务的改动
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --per-task-reset --world-lr 1e-2 --out runs/s1_adapt.json   # 每任务清零（旧版行为）
 python train_day.py --device cuda --target -1.0 -1.0             # 单任务（自动逐步打印）
 python train_day.py --device cuda --tasks-file tasks/seed1.json --eval-only \
     --base pretrain_base.pt --out runs/s1_frozen.json            # 冻结评估
@@ -101,7 +105,17 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 > ⚠️ 这 4 行是**固定任务集之前**跑的（现场随机抽 87 个任务、torch 种子未固定）。
 > 计数和分布对得上，但逐点无法复现——以后的新数字必须标 `--tasks-file` 和 `--out`。
 > "累积"这两行的含义也要重读：决策 LoRA **只在被拒绝时更新**，从不从成功里学；
-> 而且失败任务的改动也会被带进下一个任务。现在要改成"任务成功才提交"（待实现）。
+> 而且失败任务的改动也会被带进下一个任务。现在有 `--commit-on-success` 可测（见下）。
+
+用固定任务集 `tasks/seed1.json` 复跑（种子已固定）：
+
+| 配置 | 完成度 | 步数 |
+|---|---|---|
+| 冻结 `pretrain_base`（`--eval-only`） | 88.5%（77/87） | 3.75 |
+| 每任务适应（`--per-task-reset --world-lr 1e-2`） | 94.3%（82/87） | 3.67 |
+
+配对检验：完成率 McNemar **p=0.18（不显著）**；步数符号检验 **p=0.039（8 省 1 多）**。
+**结论：真正稳的信号是步数，不是完成率**——两者都成功后，"走多少步"才区分得出适应有没有用。
 
 睡眠（合并 + 2000 步回放 @ lr 3e-5）在另一批 46 个任务上：**60.9% → 80.4%**（换赢 9 / 换输 0，p=0.004）。
 

@@ -9,6 +9,11 @@
   for step:  for retry(拒绝 → 更新决策 → 原地再试)  直至通过
              通过 → 执行（真实）→ 更新世界模型（门控）
 
+LoRA 跨任务怎么处理（三种，互斥）：
+  默认            改动全部累积（失败任务的修正也会被带进下一个任务——会"偏科"）
+  --per-task-reset 每个任务清零，从前一份 base 重新适应（旧版 train_exec 的行为）
+  --commit-on-success 累积，但**只有任务成功才保留**；失败 → 连优化器状态一起回滚
+
 用法：
   python tool/make_tasks.py --seed 1 --draws 100 --out tasks/seed1.json   # 先生成固定集
   python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1_base.json
@@ -18,6 +23,7 @@
 """
 
 import argparse
+import copy
 import json
 import os
 import random
@@ -27,6 +33,36 @@ import torch
 import env
 from lora import DecisionLoRA, WorldLoRA
 from loop import load_base, obs_tensor, run_task, true_value, vstar   # noqa: F401（仍从这里可导入）
+
+
+def _all_loras(dec, world):
+    """决策 2 头 + 世界 5 头，统一成 {名字: LoRALinear}。"""
+    d = {f"dec.{k}": v for k, v in dec.loras().items()}
+    d.update({f"world.{k}": v for k, v in world.loras_dict().items()})
+    return d
+
+
+def snapshot_lora(dec, world, opts):
+    """任务开始前存一份快照：LoRA 的 A/B + 优化器状态。
+
+    为什么连优化器状态一起存：只还原权重、留着 Adam 的动量，等于让失败任务的
+    梯度继续推动后面的任务——回滚就不干净了。缓存很小（7 个 LoRA 头）。
+    """
+    return {
+        "w": {k: (v.A.detach().clone(), v.B.detach().clone())
+              for k, v in _all_loras(dec, world).items()},
+        "opt": [copy.deepcopy(o.state_dict()) for o in opts],
+    }
+
+
+def restore_lora(dec, world, opts, snap):
+    with torch.no_grad():
+        for k, v in _all_loras(dec, world).items():
+            a, b = snap["w"][k]
+            v.A.data.copy_(a)
+            v.B.data.copy_(b)
+    for o, s in zip(opts, snap["opt"]):
+        o.load_state_dict(s)
 
 
 def main():
@@ -45,6 +81,9 @@ def main():
                    help="每个任务开始前把 LoRA 清零（每个任务都从 base 重新适应）")
     p.add_argument("--keep-world", action="store_true",
                    help="配合 --per-task-reset：**不**重置世界 LoRA（身体图式跨任务累积）")
+    p.add_argument("--commit-on-success", action="store_true",
+                   help="跨任务累积，但**只有任务成功才保留**这一任务的 LoRA 改动；"
+                        "失败 → 回滚到任务开始前（权重 + 优化器状态）")
     p.add_argument("--stall-limit", type=int, default=15,
                    help="连续多少步没刷新最近距离就停（100=不让它停）")
     p.add_argument("--lr", type=float, default=1e-4, help="决策 LoRA 学习率")
@@ -57,6 +96,10 @@ def main():
                    help="结果 json 路径（重复跑时别互相覆盖）")
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
     args = p.parse_args()
+
+    if args.commit_on_success and args.per_task_reset:
+        p.error("--commit-on-success 和 --per-task-reset 是两种相反的策略："
+                "一个跨任务累积（只留成功的），一个每任务清零")
 
     # 固定 torch 随机源：LoRA 的 A 初始化用的是全局 RNG，不固定的话同一个命令
     # 两次能差 ±2 个任务（README 局限 7）。注意：这会让历史数字不能逐位复现。
@@ -104,6 +147,7 @@ def main():
 
     failures, results = [], []
     successes = dec_up = wm_up = 0
+    rolled_back = 0
     last = None
     for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
@@ -116,10 +160,18 @@ def main():
                     lora.reset_trainable()
             opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
             opt_w = torch.optim.Adam(world_lora_params, lr=args.world_lr)
+        # 成功才提交：先把任务前的状态存下来，跑完再看要不要回滚
+        snap = (snapshot_lora(dec, world, (opt_d, opt_w))
+                if (args.commit_on_success and not args.eval_only) else None)
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
                        max_steps=args.max_steps, max_retries=args.max_retries,
                        stall_limit=args.stall_limit,
                        eval_only=args.eval_only, verbose=verbose)
+        committed = True
+        if snap is not None and not res["hit"]:
+            restore_lora(dec, world, (opt_d, opt_w), snap)
+            committed = False
+            rolled_back += 1
         last = res
         dec_up += res["dec_up"]
         wm_up += res["wm_up"]
@@ -127,7 +179,7 @@ def main():
         results.append({"target": list(target), "reachable": reachable,
                         "hit": bool(res["hit"]), "dist": res["dist"],
                         "steps": res["steps"], "dec_up": res["dec_up"],
-                        "gave_up": res["gave_up"]})
+                        "gave_up": res["gave_up"], "committed": committed})
         if res["hit"]:
             successes += 1
         else:
@@ -153,11 +205,16 @@ def main():
     reach_hit = sum(1 for r in reach if r["hit"])
     print(f"[completion] 可达样本 {len(reach)}/{len(results)} | 成功 {reach_hit}/{len(reach)} = "
           f"{reach_hit/max(1,len(reach)):.3f}", flush=True)
+    if args.commit_on_success:
+        print(f"[commit] 提交 {successes} 个成功任务 | 回滚 {rolled_back} 个失败任务"
+              f"（失败的改动没带进后面的任务）", flush=True)
     if os.path.dirname(os.path.abspath(args.out)):
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"seed": args.seed, "eval_only": args.eval_only,
-                   "tasks_file": args.tasks_file, "results": results},
+                   "tasks_file": args.tasks_file,
+                   "commit_on_success": args.commit_on_success,
+                   "results": results},
                   f, ensure_ascii=False)
     if last is not None:
         with open("trajectory.json", "w", encoding="utf-8") as f:
