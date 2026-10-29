@@ -29,3 +29,6 @@ hf_cache*/
 .idea/
 .DS_Store
 day_result.json
+
+# 每次实验的输出（--out runs/xxx.json）——不提交，但要保留在本地做配对比较
+runs/

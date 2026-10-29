@@ -10,7 +10,9 @@
              通过 → 执行（真实）→ 更新世界模型（门控）
 
 用法：
-  python train_day.py --device cuda --tasks 100
+  python tool/make_tasks.py --seed 1 --draws 100 --out tasks/seed1.json   # 先生成固定集
+  python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1_base.json
+  python train_day.py --device cuda --tasks 100                 # 现场随机（不要用于对比）
   python train_day.py --device cuda --target -1.0 -1.0 --max-steps 200   # 单任务调试
   python train_day.py --device cuda --tasks 30 --eval-only --base night_base.pt
 """
@@ -49,8 +51,18 @@ def main():
     p.add_argument("--world-lr", type=float, default=1e-4,
                    help="世界 LoRA 学习率（它修的是身体图式，通常需要比决策大得多）")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--tasks-file", default=None,
+                   help="固定的任务集（tool/make_tasks.py 生成）——对比实验必须用这个")
+    p.add_argument("--out", default="day_result.json",
+                   help="结果 json 路径（重复跑时别互相覆盖）")
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
     args = p.parse_args()
+
+    # 固定 torch 随机源：LoRA 的 A 初始化用的是全局 RNG，不固定的话同一个命令
+    # 两次能差 ±2 个任务（README 局限 7）。注意：这会让历史数字不能逐位复现。
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device(args.device)
     rng = random.Random(args.seed)
@@ -71,9 +83,16 @@ def main():
     opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
     opt_w = torch.optim.Adam(world_lora_params, lr=args.world_lr)
 
-    # 任务列表（--target 单任务 / --tasks 随机多任务）
+    # 任务列表（--tasks-file 固定集 / --target 单任务 / --tasks 现场随机）
     tasks = []
-    if args.target is not None:
+    if args.tasks_file:
+        with open(args.tasks_file, encoding="utf-8") as f:
+            payload = json.load(f)
+        raw = payload["tasks"] if isinstance(payload, dict) else payload
+        tasks = [tuple(t) for t in raw if env.inverse_kinematics(*t) is not None]
+        print(f"[tasks] {args.tasks_file}: {len(tasks)} 个任务"
+              f"（文件里 {len(raw)} 个）", flush=True)
+    elif args.target is not None:
         tasks = [tuple(args.target)]
     else:
         for _ in range(args.tasks):
@@ -134,8 +153,11 @@ def main():
     reach_hit = sum(1 for r in reach if r["hit"])
     print(f"[completion] 可达样本 {len(reach)}/{len(results)} | 成功 {reach_hit}/{len(reach)} = "
           f"{reach_hit/max(1,len(reach)):.3f}", flush=True)
-    with open("day_result.json", "w", encoding="utf-8") as f:
-        json.dump({"seed": args.seed, "eval_only": args.eval_only, "results": results},
+    if os.path.dirname(os.path.abspath(args.out)):
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump({"seed": args.seed, "eval_only": args.eval_only,
+                   "tasks_file": args.tasks_file, "results": results},
                   f, ensure_ascii=False)
     if last is not None:
         with open("trajectory.json", "w", encoding="utf-8") as f:
@@ -143,8 +165,9 @@ def main():
                        "traj": last["traj"]}, f, ensure_ascii=False)
     with open("failures.json", "w", encoding="utf-8") as f:
         json.dump(failures, f, ensure_ascii=False, indent=1)
-    print(f"[save] lora_day.pt（{successes} 成功）| failures.json（{len(failures)} 失败）",
-          flush=True)
+    print(f"[save] {args.out} | "
+          f"{'lora_adapt.pt' if args.per_task_reset else 'lora_day.pt'}"
+          f"（{successes} 成功）| failures.json（{len(failures)} 失败）", flush=True)
 
 
 if __name__ == "__main__":

@@ -46,26 +46,36 @@
 ## 流程
 
 ```bash
+# ⓪ 先钉住任务集（一次性；之后所有对比都跑同一个文件）
+python tool/make_tasks.py --seed 1 --draws 100 --out tasks/seed1.json
+python tool/make_tasks.py --seed 2 --draws 100 --out tasks/seed2.json
+
 # ① 做梦（一次性，10k 步）
 python pretrain_lora.py --device cuda --steps 10000
 
-# ② 生活（白天）
-python train_day.py --device cuda --tasks 100                    # 多任务 → 完成度
+# ② 生活（白天）——对比实验必须用 --tasks-file，--out 分开存
+python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1.json
 python train_day.py --device cuda --target -1.0 -1.0             # 单任务（自动逐步打印）
-python train_day.py --device cuda --tasks 100 --eval-only --base pretrain_base.pt  # 冻结评估
+python train_day.py --device cuda --tasks-file tasks/seed1.json --eval-only \
+    --base pretrain_base.pt --out runs/s1_frozen.json            # 冻结评估
 
 # ③ 睡眠
 python train_night.py --device cuda --replay 2000 --lr 3e-5      # ⚠️ 必须是微调级 lr
 
 # ④ 睡后对比（同一批任务，配对检验）
-python tool/compare_eval.py day_before.json day_after.json
-python tool/compare_steps.py day_before.json day_after.json      # 步数（比完成率灵敏）
+python tool/compare_eval.py runs/s1.json runs/s1_night.json
+python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比完成率灵敏）
 ```
+
+**为什么一定要 `--tasks-file`**：`--tasks N` 是"抽 N 次"（不可达的丢掉），同一个命令两次能抽到不同的任务集；再加上 LoRA 初始化用的是全局 RNG，两次能差 ±2 个任务。固定任务集 + `--seed` 之后，同一命令剩下的差异只有 CUDA 非确定性。
+
+`tasks/seed1.json` 是 `--seed 1 --draws 100` 抽出来的 87 个任务，数量和 README 里那批一致（但历史那次没存任务列表，无法保证逐点相同）。三份种子集都是 i.i.d. 抽取（同分布）：seed1 87 个、seed2 90 个、seed3 90 个；彼此最接近的点对约 2 cm（1~5 对在 5 cm 内），**不是严格不重叠**——所以统计时要靠配对，不要靠"任务一定没见过"。
 
 ## 工具（`tool/`）
 
 | 工具 | 用途 |
 |---|---|
+| `make_tasks.py` | **生成固定的任务集**（`tasks/seed1.json`）——对比实验的基准 |
 | `closed_loop_exec.py` | 单任务逐步打印（调同一个 `run_task`） |
 | `check_models.py` | 决策方向 / 世界位置误差 / 折叠痛预测 |
 | `check_stall.py` | 失败状态分解：预测 vs 真实的距离/痛/负载 |
@@ -88,6 +98,11 @@ python tool/compare_steps.py day_before.json day_after.json      # 步数（比�
 | 累积决策 LoRA（不重置） | 67.8% |
 | 累积世界 LoRA（`--keep-world`） | 54.0%（世界漂成"疑病症"→ 全被安全门拦） |
 
+> ⚠️ 这 4 行是**固定任务集之前**跑的（现场随机抽 87 个任务、torch 种子未固定）。
+> 计数和分布对得上，但逐点无法复现——以后的新数字必须标 `--tasks-file` 和 `--out`。
+> "累积"这两行的含义也要重读：决策 LoRA **只在被拒绝时更新**，从不从成功里学；
+> 而且失败任务的改动也会被带进下一个任务。现在要改成"任务成功才提交"（待实现）。
+
 睡眠（合并 + 2000 步回放 @ lr 3e-5）在另一批 46 个任务上：**60.9% → 80.4%**（换赢 9 / 换输 0，p=0.004）。
 
 **关键教训**：回放的 lr 必须用微调级（3e-5）。用预训练的 3e-4，仅仅 200 步就能把合并的成果从 73.9% 擦到 56.5%。
@@ -102,7 +117,8 @@ python tool/compare_steps.py day_before.json day_after.json      # 步数（比�
    不是缺陷；但 `vstar()` 仍把它标成"可达"，所以完成度会被低估；
 6. 白天的**世界学习很慢**（LoRA 的 A 初始化只有 0.01，有效步长被压到 2e-6/步），
    不放大 `--world-lr` 时几乎没有效果；
-7. 单次运行有 **±2 个任务**的波动——`torch` 的随机种子尚未固定（LoRA 初始化用全局 RNG）。
+7. 单次运行仍有 **CUDA 非确定性**（`--seed` 现在会固定任务集和权重初始化，但同一个种子
+   两次跑的更新次数仍可能差几点，见 `工具` 里的 `closed_loop_exec` 记录）。
 
 ## 参考
 

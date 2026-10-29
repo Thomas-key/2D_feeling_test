@@ -97,6 +97,9 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
     device = torch.device(args.device)
+    torch.manual_seed(args.seed)          # 权重初始化固定（否则两次预训练不可能一致）
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     rng = random.Random(args.seed)
     dec = DecisionLoRA().to(device)
     world = WorldLoRA().to(device)
