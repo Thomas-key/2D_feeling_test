@@ -154,3 +154,38 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 - Proprioceptive Learning（arXiv:2308.08538，本体感觉）
 - Pain Axis（arXiv:2609.16247，LLM 疼痛方向）
 - Silicopathy（IEEE，人工疼痛/共情）
+
+## 怎么量"白天到底学到了什么"
+
+一个容易犯的错：白天在 seed1 上训练，然后拿 seed1 考它。那是**拟合**的尺子。
+真正的学习要考**没见过的目标**：
+
+```
+白天：只在 seed1 上下功（87 个）
+考试：冻结后考 seed2 + seed3（180 个从没训练过的任务）
+```
+
+```bash
+# 基准：不训练，直接考留出集
+python train_day.py --device cuda --tasks-file tasks/seed2.json tasks/seed3.json \
+    --eval-only --base pretrain_base.pt --out runs/heldout_base.json
+
+# 白天在 seed1 学，冻结后考留出集（--ckpt-out 保住适配器）
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --out runs/s1_acm.json --ckpt-out runs/s1_acm.pt
+python train_day.py --device cuda --tasks-file tasks/seed2.json tasks/seed3.json \
+    --eval-only --base runs/s1_acm.pt --load-dec-lora --no-save --out runs/heldout_acm.json
+python tool/compare_eval.py runs/heldout_base.json runs/heldout_acm.json
+```
+
+2×2（决策 × 世界，哪一个累积才让模型真的学到东西）：
+
+| 命令 | 决策 | 世界 |
+|---|---|---|
+| `--per-task-reset` | 重置 | 重置 |
+| `--per-task-reset dec` | 重置 | 累积 |
+| `--per-task-reset world` | 累积 | 重置 |
+| （默认） | 累积 | 累积 |
+
+存档时会把**不参与累积的那一侧清零**——`--per-task-reset dec` 跑完时决策 LoRA 里
+只剩最后一个任务的临时适配，留着它，冻结评估就会把这份临时适配当成"白天学到的决策"。

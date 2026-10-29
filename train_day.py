@@ -9,19 +9,23 @@
   for step:  for retry(拒绝 → 更新决策 → 原地再试)  直至通过
              通过 → 执行（真实）→ 更新世界模型（门控）
 
-LoRA 跨任务怎么处理（三种，互斥）：
-  默认            改动全部累积（失败任务的修正也会被带进下一个任务——会"偏科"）
-  --per-task-reset 每个任务清零，从前一份 base 重新适应（旧版 train_exec 的行为）
-  --commit-on-success 累积，但**只有任务成功才保留**；失败 → 连优化器状态一起回滚
+LoRA 跨任务怎么处理（选一种）：
+  默认                 改动全部累积（决策 + 世界）
+  --per-task-reset X   每任务重置 X = both / dec / world（只重置其中一个也行）
+  --commit-on-success  累积，但**只有任务成功才保留**；失败 → 连优化器状态一起回滚
     --commit-dec-only 配合上一行：只回滚决策 LoRA，保留世界的修正
-      （世界的监督信号是**真实身体响应**，任务失败不代表那次预测修正是错的）
+
+为什么需要 --per-task-reset dec / world：
+  之前只能表达"两个都重置"和"只重置决策"。要做 2×2（决策累积×世界累积）
+  找出"到底哪一头在学"，必须能单独关掉其中一个。
 
 用法：
   python tool/make_tasks.py --seed 1 --draws 100 --out tasks/seed1.json   # 先生成固定集
   python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1_base.json
+  python train_day.py --device cuda --tasks-file tasks/seed2.json tasks/seed3.json \
+      --eval-only --base runs/s1_acm.pt --load-dec-lora --no-save --out runs/heldout.json
   python train_day.py --device cuda --tasks 100                 # 现场随机（不要用于对比）
   python train_day.py --device cuda --target -1.0 -1.0 --max-steps 200   # 单任务调试
-  python train_day.py --device cuda --tasks 30 --eval-only --base night_base.pt
 """
 
 import argparse
@@ -86,10 +90,13 @@ def main():
     p.add_argument("--t2", type=float, default=90.0, help="初始 θ2")
     p.add_argument("--max-steps", type=int, default=100, help="最多接受多少次移动")
     p.add_argument("--max-retries", type=int, default=50, help="同一个状态最多试几次")
-    p.add_argument("--per-task-reset", action="store_true",
-                   help="每个任务开始前把 LoRA 清零（每个任务都从 base 重新适应）")
+    p.add_argument("--per-task-reset", nargs="?", const="both", default=None,
+                   choices=["both", "dec", "world"],
+                   help="每个任务开始前重置哪些 LoRA："
+                        "both（默认）= 决策+世界；dec = 只重置决策（世界照常累积）；"
+                        "world = 只重置世界（决策照常累积）")
     p.add_argument("--keep-world", action="store_true",
-                   help="配合 --per-task-reset：**不**重置世界 LoRA（身体图式跨任务累积）")
+                   help="旧写法，等价于 --per-task-reset dec")
     p.add_argument("--commit-on-success", action="store_true",
                    help="跨任务累积，但**只有任务成功才保留**这一任务的 LoRA 改动；"
                         "失败 → 回滚到任务开始前（权重 + 优化器状态）")
@@ -102,8 +109,9 @@ def main():
     p.add_argument("--world-lr", type=float, default=1e-4,
                    help="世界 LoRA 学习率（它修的是身体图式，通常需要比决策大得多）")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--tasks-file", default=None,
-                   help="固定的任务集（tool/make_tasks.py 生成）——对比实验必须用这个")
+    p.add_argument("--tasks-file", nargs="+", default=None,
+                   help="固定的任务集（tool/make_tasks.py 生成）——对比实验必须用这个；"
+                        "可以给多个，按顺序拼起来（如 heldout = seed2 seed3）")
     p.add_argument("--out", default="day_result.json",
                    help="结果 json 路径（重复跑时别互相覆盖）")
     p.add_argument("--ckpt-out", default=None,
@@ -119,6 +127,9 @@ def main():
                 "一个跨任务累积（只留成功的），一个每任务清零")
     if args.commit_dec_only and not args.commit_on_success:
         p.error("--commit-dec-only 要配 --commit-on-success 用")
+    reset_scope = args.per_task_reset
+    if args.keep_world and reset_scope is None:
+        reset_scope = "dec"          # 旧写法：--per-task-reset --keep-world
 
     # 固定 torch 随机源：LoRA 的 A 初始化用的是全局 RNG，不固定的话同一个命令
     # 两次能差 ±2 个任务（README 局限 7）。注意：这会让历史数字不能逐位复现。
@@ -149,12 +160,14 @@ def main():
     # 任务列表（--tasks-file 固定集 / --target 单任务 / --tasks 现场随机）
     tasks = []
     if args.tasks_file:
-        with open(args.tasks_file, encoding="utf-8") as f:
-            payload = json.load(f)
-        raw = payload["tasks"] if isinstance(payload, dict) else payload
-        tasks = [tuple(t) for t in raw if env.inverse_kinematics(*t) is not None]
-        print(f"[tasks] {args.tasks_file}: {len(tasks)} 个任务"
-              f"（文件里 {len(raw)} 个）", flush=True)
+        for path in args.tasks_file:
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            raw = payload["tasks"] if isinstance(payload, dict) else payload
+            got = [tuple(t) for t in raw if env.inverse_kinematics(*t) is not None]
+            print(f"[tasks] {path}: {len(got)} 个任务（文件里 {len(raw)} 个）", flush=True)
+            tasks += got
+        print(f"[tasks] 合计 {len(tasks)} 个任务", flush=True)
     elif args.target is not None:
         tasks = [tuple(args.target)]
     else:
@@ -172,10 +185,11 @@ def main():
     for task, target in enumerate(attempts_list):
         if env.inverse_kinematics(*target) is None:
             continue
-        if args.per_task_reset:      # 每个任务都从同一份 base 重新适应
-            for lora in dec.loras().values():
-                lora.reset_trainable()   # 注意不是 reset()：全零会让梯度恒为零
-            if not args.keep_world:
+        if reset_scope:              # 每个任务都从同一份 base 重新适应
+            if reset_scope in ("both", "dec"):
+                for lora in dec.loras().values():
+                    lora.reset_trainable()   # 不是 reset()：全零会让梯度恒为零
+            if reset_scope in ("both", "world"):
                 for lora in world.loras_dict().values():
                     lora.reset_trainable()
             opt_d = torch.optim.Adam(dec_lora_params, lr=args.lr)
@@ -214,6 +228,16 @@ def main():
                   f"决策更新 {dec_up} | 世界更新 {wm_up}", flush=True)
 
     # 3. 保存（LoRA / 失败记录 / 轨迹）
+    # 存档前把"不参与累积"的那一侧清零：--per-task-reset dec 意味着决策每天任务前
+    # 都重置，所以跑完时它里面只有**最后一个任务**的临时适配。留着它，
+    # 冻结评估就会把这份临时适配当成"白天学到的决策"。清零才对。
+    if not args.no_save:
+        if reset_scope in ("both", "dec"):
+            for lora in dec.loras().values():
+                lora.reset()
+        if reset_scope in ("both", "world"):
+            for lora in world.loras_dict().values():
+                lora.reset()
     ckpt = args.ckpt_out or ("lora_adapt.pt" if args.per_task_reset else "lora_day.pt")
     if not args.no_save:
         if os.path.dirname(os.path.abspath(ckpt)):
