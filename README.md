@@ -60,6 +60,9 @@ python train_day.py --device cuda --tasks-file tasks/seed1.json \
 python train_day.py --device cuda --tasks-file tasks/seed1.json \
     --commit-on-success --out runs/s1_commit.json               # 只保留成功任务的改动
 python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --commit-on-success --commit-dec-only \
+    --out runs/s1_commitdec.json                                 # 同上，但世界的修正保留
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
     --per-task-reset --world-lr 1e-2 --out runs/s1_adapt.json   # 每任务清零（旧版行为）
 python train_day.py --device cuda --target -1.0 -1.0             # 单任务（自动逐步打印）
 python train_day.py --device cuda --tasks-file tasks/seed1.json --eval-only \
@@ -115,10 +118,16 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
   **真正稳的信号是步数，不是完成率**——两者都成功后，"走多少步"才区分得出适应有没有用。
 - 累积 → 成功才提交：B **少 7 个任务**（换输 9 / 换赢 2，p=0.065）。
 
-**"失败任务的改动会带偏模型"这个假设不成立**（在当前代码上）。去掉失败任务的改动反而更差，
-大概因为：失败处正是能力边界、最需要学的地方；而且少了约 400 次更新。
+**"失败任务的改动会带偏模型"这个假设，至少对决策那头不成立。** 整套回滚反而更差，
+但这里混着两个原因：决策的修正被丢掉了，**世界的真实偏差修正也被丢掉了**。
+`--commit-dec-only`（只回滚决策、保留世界）就是为了把这两个原因拆开——**还没测**。
+
 上表的 67.8% / 54.0% 是旧代码的数字（在"负痛夹到 ≥0、θ1 环绕、痛损失改价值权重、
 门控收紧"之前测的），**不能再引用**。
+
+> 另一个数字值得记住：一天累积的 LoRA 改了 `||ΔW||/||W||` 的 44~61%、动作平均变 6°，
+> 但**冻结之后只值 +1 个任务**（88.5% → 89.7%，p=1.00）。白天得到的是"不一样的策略"，
+> 不是"更好的策略"。
 
 > 旧数据：累积决策 LoRA 67.8%、累积世界 LoRA（`--keep-world`）54.0%——固定任务集之前、旧代码。
 > 睡眠（合并 + 2000 步回放 @ lr 3e-5）在另一批 46 个任务上：60.9% → 80.4%（换赢 9 / 换输 0，p=0.004）。
