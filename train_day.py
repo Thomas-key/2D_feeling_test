@@ -73,6 +73,9 @@ def main():
     p.add_argument("--attempts", type=int, default=1, help="每个任务尝试次数（共享模型）")
     p.add_argument("--eval-only", action="store_true", help="只评估（权重全冻结，不更新）")
     p.add_argument("--base", default="pretrain_base.pt", help="加载的 base（睡后评估用 night_base.pt）")
+    p.add_argument("--load-dec-lora", action="store_true",
+                   help="连 base 里的**决策 LoRA** 一起加载（默认不加载）。"
+                        "做保持性测试：拿一天结束后的适配器冻结跑")
     p.add_argument("--t1", type=float, default=30.0, help="初始 θ1")
     p.add_argument("--t2", type=float, default=90.0, help="初始 θ2")
     p.add_argument("--max-steps", type=int, default=100, help="最多接受多少次移动")
@@ -94,6 +97,11 @@ def main():
                    help="固定的任务集（tool/make_tasks.py 生成）——对比实验必须用这个")
     p.add_argument("--out", default="day_result.json",
                    help="结果 json 路径（重复跑时别互相覆盖）")
+    p.add_argument("--ckpt-out", default=None,
+                   help="权重存哪（默认 lora_day.pt / --per-task-reset 时 lora_adapt.pt）。"
+                        "实验时指到 runs/xxx.pt，别让每次跑都覆盖 lora_day.pt")
+    p.add_argument("--no-save", action="store_true",
+                   help="不写权重（评估已有适配器时用，防止把要评估的东西覆盖掉）")
     p.add_argument("--verbose", action="store_true", help="每步打印（单任务调试用）")
     args = p.parse_args()
 
@@ -114,8 +122,9 @@ def main():
 
     # 1. 加载 base（预训练 pretrain_base / 睡后 night_base）
     if os.path.exists(args.base):
-        load_base(dec, world, args.base)
-        print(f"[init] base: {args.base}", flush=True)
+        load_base(dec, world, args.base, dec_lora=args.load_dec_lora)
+        print(f"[init] base: {args.base}"
+              f"{'（含决策 LoRA）' if args.load_dec_lora else ''}", flush=True)
     else:
         print(f"[warn] 无 {args.base}——base 随机！先跑 pretrain_lora.py", flush=True)
 
@@ -192,15 +201,19 @@ def main():
                   f"决策更新 {dec_up} | 世界更新 {wm_up}", flush=True)
 
     # 3. 保存（LoRA / 失败记录 / 轨迹）
-    torch.save({"dec_base": dec.base.state_dict(),
-                "dec_heads": {k: getattr(dec, k).state_dict()
-                              for k in ("head_shoulder", "head_elbow")},
-                "dec_lora": {k: v.state_dict() for k, v in dec.loras().items()},
-                "world_base": world.base.state_dict(),
-                "world_heads": world.heads.state_dict(),
-                "world_lora": {k: v.state_dict()
-                               for k, v in world.loras_dict().items()}},
-               "lora_adapt.pt" if args.per_task_reset else "lora_day.pt")
+    ckpt = args.ckpt_out or ("lora_adapt.pt" if args.per_task_reset else "lora_day.pt")
+    if not args.no_save:
+        if os.path.dirname(os.path.abspath(ckpt)):
+            os.makedirs(os.path.dirname(os.path.abspath(ckpt)), exist_ok=True)
+        torch.save({"dec_base": dec.base.state_dict(),
+                    "dec_heads": {k: getattr(dec, k).state_dict()
+                                  for k in ("head_shoulder", "head_elbow")},
+                    "dec_lora": {k: v.state_dict() for k, v in dec.loras().items()},
+                    "world_base": world.base.state_dict(),
+                    "world_heads": world.heads.state_dict(),
+                    "world_lora": {k: v.state_dict()
+                                   for k, v in world.loras_dict().items()}},
+                   ckpt)
     reach = [r for r in results if r["reachable"]]
     reach_hit = sum(1 for r in reach if r["hit"])
     print(f"[completion] 可达样本 {len(reach)}/{len(results)} | 成功 {reach_hit}/{len(reach)} = "
@@ -223,8 +236,8 @@ def main():
     with open("failures.json", "w", encoding="utf-8") as f:
         json.dump(failures, f, ensure_ascii=False, indent=1)
     print(f"[save] {args.out} | "
-          f"{'lora_adapt.pt' if args.per_task_reset else 'lora_day.pt'}"
-          f"（{successes} 成功）| failures.json（{len(failures)} 失败）", flush=True)
+          f"{'（--no-save，没写权重）' if args.no_save else ckpt}"
+          f" | {successes} 成功 / {len(failures)} 失败", flush=True)
 
 
 if __name__ == "__main__":

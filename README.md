@@ -54,7 +54,9 @@ python tool/make_tasks.py --seed 2 --draws 100 --out tasks/seed2.json
 python pretrain_lora.py --device cuda --steps 10000
 
 # ② 生活（白天）——对比实验必须用 --tasks-file，--out 分开存
-python train_day.py --device cuda --tasks-file tasks/seed1.json --out runs/s1.json
+#    --ckpt-out 让每次实验的适配器单独落盘（否则都会覆盖 lora_day.pt）
+python train_day.py --device cuda --tasks-file tasks/seed1.json \
+    --out runs/s1.json --ckpt-out runs/s1_acm.pt
 python train_day.py --device cuda --tasks-file tasks/seed1.json \
     --commit-on-success --out runs/s1_commit.json               # 只保留成功任务的改动
 python train_day.py --device cuda --tasks-file tasks/seed1.json \
@@ -62,6 +64,11 @@ python train_day.py --device cuda --tasks-file tasks/seed1.json \
 python train_day.py --device cuda --target -1.0 -1.0             # 单任务（自动逐步打印）
 python train_day.py --device cuda --tasks-file tasks/seed1.json --eval-only \
     --base pretrain_base.pt --out runs/s1_frozen.json            # 冻结评估
+
+# 保持性测试：拿一天结束后的适配器**冻结**再跑一遍，按顺序分块看早期任务掉不掉
+python train_day.py --device cuda --tasks-file tasks/seed1.json --eval-only \
+    --base runs/s1_acm.pt --load-dec-lora --no-save --out runs/s1_final.json
+python tool/retention.py runs/s1_frozen.json runs/s1_final.json --blocks 4
 
 # ③ 睡眠
 python train_night.py --device cuda --replay 2000 --lr 3e-5      # ⚠️ 必须是微调级 lr
@@ -89,35 +96,32 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 | `compare_eval.py` | 两组完成度的配对检验（McNemar） |
 | `compare_steps.py` | 两组步数的配对检验（符号检验） |
 | `split_eval.py` | 拆成"训练过的 / 没见过的"任务 |
+| `retention.py` | 按任务顺序分块，看早期任务有没有被忘掉（需要两份冻结评估） |
 | `show_fails.py` | 失败任务列表：类型 / 到肩距离 / 需要 θ2 / 会痛多少 |
 | `check_reject.py` / `check_enum.py` / `check_small.py` | 单状态的误拒、动作枚举、小动作精度 |
 | `view.html` | 把 `trajectory.json` 拖进浏览器看动画 |
 
-## 结果（实测，同一批 87 个任务）
-
-| 配置 | 完成度 |
-|---|---|
-| 冻结 `pretrain_base` | 88.5% |
-| 白天每任务适应（决策重置 + `--world-lr 1e-2`） | **95.4%** |
-| 累积决策 LoRA（不重置） | 67.8% |
-| 累积世界 LoRA（`--keep-world`） | 54.0%（世界漂成"疑病症"→ 全被安全门拦） |
-
-> ⚠️ 这 4 行是**固定任务集之前**跑的（现场随机抽 87 个任务、torch 种子未固定）。
-> 计数和分布对得上，但逐点无法复现——以后的新数字必须标 `--tasks-file` 和 `--out`。
-> "累积"这两行的含义也要重读：决策 LoRA **只在被拒绝时更新**，从不从成功里学；
-> 而且失败任务的改动也会被带进下一个任务。现在有 `--commit-on-success` 可测（见下）。
-
-用固定任务集 `tasks/seed1.json` 复跑（种子已固定）：
+## 结果（实测，固定任务集 `tasks/seed1.json`，87 个任务）
 
 | 配置 | 完成度 | 步数 |
 |---|---|---|
 | 冻结 `pretrain_base`（`--eval-only`） | 88.5%（77/87） | 3.75 |
-| 每任务适应（`--per-task-reset --world-lr 1e-2`） | 94.3%（82/87） | 3.67 |
+| 每任务适应（`--per-task-reset --world-lr 1e-2`） | **94.3%**（82/87） | 3.67 |
+| 默认累积（不重置） | 92.0%（80/87） | — |
+| 成功才提交（`--commit-on-success`） | 83.9%（73/87） | — |
 
-配对检验：完成率 McNemar **p=0.18（不显著）**；步数符号检验 **p=0.039（8 省 1 多）**。
-**结论：真正稳的信号是步数，不是完成率**——两者都成功后，"走多少步"才区分得出适应有没有用。
+配对检验：
+- 冻结 → 每任务适应：完成率 McNemar **p=0.18（不显著）**；步数符号检验 **p=0.039（8 省 1 多）**。
+  **真正稳的信号是步数，不是完成率**——两者都成功后，"走多少步"才区分得出适应有没有用。
+- 累积 → 成功才提交：B **少 7 个任务**（换输 9 / 换赢 2，p=0.065）。
 
-睡眠（合并 + 2000 步回放 @ lr 3e-5）在另一批 46 个任务上：**60.9% → 80.4%**（换赢 9 / 换输 0，p=0.004）。
+**"失败任务的改动会带偏模型"这个假设不成立**（在当前代码上）。去掉失败任务的改动反而更差，
+大概因为：失败处正是能力边界、最需要学的地方；而且少了约 400 次更新。
+上表的 67.8% / 54.0% 是旧代码的数字（在"负痛夹到 ≥0、θ1 环绕、痛损失改价值权重、
+门控收紧"之前测的），**不能再引用**。
+
+> 旧数据：累积决策 LoRA 67.8%、累积世界 LoRA（`--keep-world`）54.0%——固定任务集之前、旧代码。
+> 睡眠（合并 + 2000 步回放 @ lr 3e-5）在另一批 46 个任务上：60.9% → 80.4%（换赢 9 / 换输 0，p=0.004）。
 
 **关键教训**：回放的 lr 必须用微调级（3e-5）。用预训练的 3e-4，仅仅 200 步就能把合并的成果从 73.9% 擦到 56.5%。
 
