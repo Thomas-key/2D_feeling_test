@@ -100,6 +100,7 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 | `compare_steps.py` | 两组步数的配对检验（符号检验） |
 | `split_eval.py` | 拆成"训练过的 / 没见过的"任务 |
 | `retention.py` | 按任务顺序分块，看早期任务有没有被忘掉（需要两份冻结评估） |
+| `run_2x2.bat` | 一次跑完 2×2（白天只学 seed1，考试在留出的 seed2+seed3 上） |
 | `show_fails.py` | 失败任务列表：类型 / 到肩距离 / 需要 θ2 / 会痛多少 |
 | `check_reject.py` / `check_enum.py` / `check_small.py` | 单状态的误拒、动作枚举、小动作精度 |
 | `view.html` | 把 `trajectory.json` 拖进浏览器看动画 |
