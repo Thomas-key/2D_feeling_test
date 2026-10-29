@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """train_day.py — 白天（真实）：base 预训练（全量）+ 任务循环（LoRA 在线更新）
 
-循环本体在 loop.run_task()——和 closed_loop_exec.py 是同一份（以前抄了两份，
+循环本体在 loop.run_task()（以前这里和单任务脚本各抄了一份，
 一份有内层重试一份没有，导致两边 step 不是同一个时钟）。
 
 一次任务：

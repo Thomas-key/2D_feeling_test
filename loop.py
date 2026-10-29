@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""loop.py — 决策 / 世界共用的任务循环（train_day.py 与 closed_loop_exec.py 都调这一个）
+"""loop.py — 决策 / 世界共用的任务循环（train_day.py 调的就是这一个）
 
 为什么要有这个文件：
-  这段循环原先在 train_day.py 和 closed_loop_exec.py 里各抄了一份，而且抄歪了——
-  closed_loop 有内层重试（一个状态上最多试 300 次），train_day 没有（拒绝一次就烧掉一格 step）。
+  这段循环原先在 train_day.py 和单任务脚本里各抄了一份，而且抄歪了——
+  单任务脚本有内层重试（一个状态上最多试 300 次），train_day 没有（拒绝一次就烧掉一格 step）。
   于是两边的 step 不是同一个时钟，对比轨迹时得出了一个假 bug（"权重一模一样结果却不同"）。
   现在只有这一份。
 

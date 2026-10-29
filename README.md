@@ -101,8 +101,6 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 | 工具 | 用途 |
 |---|---|
 | `make_tasks.py` | **生成固定的任务集**（`tasks/seed1.json`）——对比实验的基准 |
-| `closed_loop_exec.py` | 单任务逐步打印（调同一个 `run_task`） |
-| `check_models.py` | 决策方向 / 世界位置误差 / 折叠痛预测 |
 | `check_stall.py` | 失败状态分解：预测 vs 真实的距离/痛/负载 |
 | `check_policy.py` | 误拒/误接率（按动作大小分桶） |
 | `check_body.py` | 标量身体 `step_body` 与可微版 `step_theta2_t` 是否一致 |
@@ -110,14 +108,8 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 | `check_world.py` | 世界模型准不准：位置/痛/价值误差 + 价值判定翻转率（冻结评估量不到它） |
 | `compare_eval.py` | 两组完成度的配对检验（McNemar） |
 | `compare_steps.py` | 两组步数的配对检验（符号检验） |
-| `split_eval.py` | 拆成"训练过的 / 没见过的"任务 |
 | `retention.py` | 按任务顺序分块，看早期任务有没有被忘掉（需要两份冻结评估） |
-| `run_2x2.bat` | 一次跑完 2×2（白天只学 seed1，考试在留出的 seed2+seed3 上） |
-| `run_oracle.bat` | 把白天的学习信号换成真实物理（oracle 老师），看崩溃是不是老师太差 |
-| `run_worldfast.bat` | 世界的学习率放大 100 倍（`--world-lr 1e-2`），看世界变准后决策跟不跟 |
-| `run_worldlr.bat` | 扫 `--world-lr`（3e-4 / 1e-3），找世界学习率的稳定边界 |
 | `show_fails.py` | 失败任务列表：类型 / 到肩距离 / 需要 θ2 / 会痛多少（`--summary` 只看统计） |
-| `check_reject.py` / `check_enum.py` / `check_small.py` | 单状态的误拒、动作枚举、小动作精度 |
 | `view.html` | 把 `trajectory.json` 拖进浏览器看动画 |
 
 ## 结果（实测，固定任务集 `tasks/seed1.json`，87 个任务）
@@ -161,7 +153,7 @@ python tool/compare_steps.py runs/s1.json runs/s1_night.json     # 步数（比�
 6. 白天的**世界学习很慢**（LoRA 的 A 初始化只有 0.01，有效步长被压到 2e-6/步），
    不放大 `--world-lr` 时几乎没有效果；
 7. 单次运行仍有 **CUDA 非确定性**（`--seed` 现在会固定任务集和权重初始化，但同一个种子
-   两次跑的更新次数仍可能差几点，见 `工具` 里的 `closed_loop_exec` 记录）。
+   同一个种子两次跑的更新次数仍可能差几点）。
 
 ## 参考
 
@@ -206,7 +198,7 @@ python tool/compare_eval.py runs/heldout_base.json runs/heldout_acm.json
 存档时会把**不参与累积的那一侧清零**——`--per-task-reset dec` 跑完时决策 LoRA 里
 只剩最后一个任务的临时适配，留着它，冻结评估就会把这份临时适配当成"白天学到的决策"。
 
-### 实测（`tool/run_2x2.bat`，白天在 seed1 学，考试在留出的 seed2+seed3）
+### 实测（白天在 seed1 学，考试在留出的 seed2+seed3）
 
 | 条件 | 留出集 | 相对基准 |
 |---|---|---|
