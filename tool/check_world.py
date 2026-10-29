@@ -13,6 +13,15 @@
   痛误差       预测痛 vs 真实痛（分）
   价值误差     |预测 V' - 真实 V'|——验证门真正比较的是这个
   判定翻转     预测"这步值得走吗"与真值结论不一致的比例（决定会不会走错）
+  偏差残留     世界模型把身体偏差学掉了多少（见下）
+
+为什么单独要"偏差残留"：
+  用 --body 让身体变一点（比如 d2_bias=3 → 手每步多走 0.05 米）时，
+  这个偏差会被模型原有的 0.21 米随机误差完全盖住（RMS 只从 0.2123 变到 0.2185），
+  看误差大小根本看不出来。但偏差是**系统性**的：把它投影到偏差方向上，
+  2000 个样本的标准误只有 0.0045 米，0.05 米的偏差是 11 个标准误。
+  偏差残留 = 1 → 一点没学到；= 0 → 完全学会了。
+  这才是"自我校准"该看的量（校准是消除系统偏差，不是减小随机误差）。
 
 ⚠️ 配对很重要：同一批样本上，一个检查点的误差降了 0.004 到底算不算数，
    要看不一致方向（更好/更差多少个样本），而不是只看均值。
@@ -64,6 +73,7 @@ def evaluate(path, samples, device):
     scale = torch.tensor(env.OUT_SCALE, device=device)
 
     pos_e, pain_e, load_e, val_e, flip = [], [], [], [], []
+    bias_r, bias_mag = [], 0.0        # 偏差残留（逐样本）+ 平均偏差大小
     false_ok = 0
     with torch.no_grad():
         for t1, t2, target, d1r, d2r in samples:
@@ -81,6 +91,18 @@ def evaluate(path, samples, device):
             phx, phy = ohx + float(pred[0]), ohy + float(pred[1])
 
             pos_e.append(math.hypot(phx - nhx, phy - nhy))
+
+            # 身体偏差：真实走到的位置 vs "身体完全听话"会走到的位置。
+            # fold_target 不注入 _act 的偏差，所以它给的就是"听话"的结果。
+            chx, chy = env.forward_kinematics(t1 + float(d1r),
+                                              env.fold_target(t2, float(d2r)))
+            bx, by = nhx - chx, nhy - chy
+            bmag = math.hypot(bx, by)
+            if bmag > 1e-3:                      # 偏差太小（比如折叠已经饱和）就跳过
+                proj = ((phx - nhx) * bx + (phy - nhy) * by) / bmag
+                bias_r.append(-proj / bmag)      # 1=完全没学 0=完全学会
+                bias_mag += bmag
+
             pain_e.append(abs(p_pred - pain_a))
             load_e.append(abs(l_pred - load_a))
 
@@ -94,7 +116,8 @@ def evaluate(path, samples, device):
             if ok_pred and not ok_true:
                 false_ok += 1
     return {"pos": pos_e, "pain": pain_e, "load": load_e, "value": val_e,
-            "flip": flip, "false_ok": false_ok}
+            "flip": flip, "false_ok": false_ok,
+            "bias": bias_r, "bias_mag": bias_mag / max(1, len(bias_r))}
 
 
 def mean(xs):
@@ -149,7 +172,7 @@ def main():
           f"其中真值会痛（痛 > 0）的 {pain_n} 个")
     print()
     print(f"{'检查点':<24}{'位置(m)':>9}{'痛(分)':>8}{'负载':>7}{'价值':>8}"
-          f"{'判定翻转':>9}{'误接':>7}")
+          f"{'判定翻转':>9}{'误接':>7}{'偏差残留':>10}")
 
     results = []
     base = None
@@ -161,9 +184,10 @@ def main():
         n = len(r["pos"])
         tag = os.path.basename(path)[:23]
         fl = sum(r["flip"]) / n
+        sr = f"{mean(r['bias']):>9.0%}" if r["bias"] else f"{'—':>9}"
         print(f"{tag:<24}{mean(r['pos']):>9.4f}{mean(r['pain']):>8.2f}"
               f"{mean(r['load']):>7.3f}{mean(r['value']):>8.4f}"
-              f"{fl:>8.1%}{r['false_ok']:>7}")
+              f"{fl:>8.1%}{r['false_ok']:>7}{sr:>10}")
         if base is None:
             base = r
         else:
@@ -173,6 +197,11 @@ def main():
                 m, se, better, worse, pv = paired(base, r, key)
                 print(f"  {name:<6} {m:+.4f}{unit} ± {se:.4f}  "
                       f"更好 {better} / 更差 {worse}   p={pv:.3f}")
+            if r["bias"] and base["bias"]:
+                mb, se_b, bb, wb, pb = paired(base, r, "bias")
+                print(f"  {'偏差残留':<6} {mb:+.3f} ± {se_b:.3f}  "
+                      f"更好 {bb} / 更差 {wb}   p={pb:.3f}"
+                      f"   （身体偏差平均 {r['bias_mag']:.3f} 米）")
             fb = sum(base["flip"])
             fo = sum(r["flip"])
             # 判定翻转是 0/1，用配对 McNemar
