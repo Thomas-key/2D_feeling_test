@@ -25,6 +25,7 @@ import math
 
 import torch
 
+import dream
 import env
 
 HIT_DIST = 0.1      # 到达判定（米）
@@ -137,7 +138,7 @@ def load_base(dec, world, path, dec_lora=False, world_lora=True):
 
 def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
              max_steps=100, max_retries=50, stall_limit=15,
-             eval_only=False, verbose=False):
+             eval_only=False, verbose=False, oracle_teacher=False):
     """跑一个任务（从 (t1,t2) 出发）。
 
     每一步的重试规则：
@@ -152,6 +153,11 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
     实测 14 个失败里 12 个"一步就能到"。它失败不是因为不会走，是不肯迈第一步。
 
     eval_only=True：权重全冻结（不更新决策/世界），但第 4 条同样生效。
+
+    oracle_teacher=True：**只把"学习信号"换成真实物理**（规则世界、可微），
+    接受/拒绝的判断仍然用世界模型。用来回答一个二选一的问题：
+      "决策学坏了，是因为老师（世界模型）太差，还是因为学习规则本身有问题？"
+    真实物理的梯度走 dream.decision_loss()——和预训练/夜间复习同一套。
 
     返回：
       hit      是否到达（dist < HIT_DIST）
@@ -206,7 +212,11 @@ def run_task(dec, world, opt_d, opt_w, target, t1, t2, *,
                     break
             if eval_only:          # 冻结时不更新 → 原地再试也没意义
                 break
-            loss_d = -v_new        # 拒绝 → 决策往上抬
+            if oracle_teacher:
+                # 老师换成真实物理：梯度按"规则世界里的真实价值"给
+                loss_d, _v = dream.decision_loss(dec, obs, t1, t2, target)
+            else:
+                loss_d = -v_new    # 拒绝 → 决策往上抬（用的是世界模型的判断）
             opt_d.zero_grad()
             loss_d.backward()
             opt_d.step()

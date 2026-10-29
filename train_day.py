@@ -103,6 +103,9 @@ def main():
     p.add_argument("--commit-dec-only", action="store_true",
                    help="配合 --commit-on-success：失败时**只回滚决策 LoRA**，"
                         "世界的修正保留（世界的监督信号是真实身体响应，不该因任务失败丢弃）")
+    p.add_argument("--oracle-teacher", action="store_true",
+                   help="学习信号换成真实物理（规则世界），但接受/拒绝仍用世界模型。"
+                        "用来区分'老师太差'和'学习规则本身有问题'")
     p.add_argument("--stall-limit", type=int, default=15,
                    help="连续多少步没刷新最近距离就停（100=不让它停）")
     p.add_argument("--lr", type=float, default=1e-4, help="决策 LoRA 学习率")
@@ -202,7 +205,8 @@ def main():
         res = run_task(dec, world, opt_d, opt_w, target, args.t1, args.t2,
                        max_steps=args.max_steps, max_retries=args.max_retries,
                        stall_limit=args.stall_limit,
-                       eval_only=args.eval_only, verbose=verbose)
+                       eval_only=args.eval_only, verbose=verbose,
+                       oracle_teacher=args.oracle_teacher)
         committed = True
         if snap is not None and not res["hit"]:
             restore_lora(dec, world, c_opts, snap, c_scope)
@@ -267,6 +271,7 @@ def main():
                    "commit_on_success": args.commit_on_success,
                    "commit_dec_only": args.commit_dec_only,
                    "load_dec_lora": args.load_dec_lora,
+                   "oracle_teacher": args.oracle_teacher,
                    "results": results},
                   f, ensure_ascii=False)
     if last is not None:
